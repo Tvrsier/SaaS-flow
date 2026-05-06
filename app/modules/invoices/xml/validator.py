@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 from lxml import etree
 
+from app.logger import logger
+
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
@@ -89,12 +91,17 @@ class LocalXSDSchemaProvider(XSDSchemaProvider):
 
     def get_schema_content(self) -> bytes:
         """Legge lo schema XSD da file locale"""
+        logger.debug(f"Loading XSD schema from local file: {self.xsd_path}")
+
         if not self.xsd_path.exists():
+            logger.error(f"XSD schema file not found: {self.xsd_path}")
             raise FileNotFoundError(f"Schema XSD non trovato: {self.xsd_path}")
 
         if not self.xsd_path.is_file():
+            logger.error(f"XSD path is not a file: {self.xsd_path}")
             raise ValueError(f"Il path non è un file: {self.xsd_path}")
 
+        logger.debug(f"XSD schema loaded successfully from {self.xsd_path}")
         return self.xsd_path.read_bytes()
 
 
@@ -127,21 +134,27 @@ class S3XSDSchemaProvider(XSDSchemaProvider):
             try:
                 import boto3
             except ImportError:
+                logger.error("boto3 not installed for S3 operations")
                 raise ImportError(
                     "boto3 is required for S3XSDSchemaProvider. "
                     "Install it with: pip install boto3"
                 )
 
+            logger.debug(f"Creating S3 client for region: {self.region_name}")
             self._s3_client = boto3.client("s3", region_name=self.region_name)  # type: ignore[assignment]
 
         return self._s3_client
 
     def get_schema_content(self) -> bytes:
         """Scarica lo schema XSD da S3"""
+        logger.debug(f"Downloading XSD schema from S3: s3://{self.bucket}/{self.key}")
         try:
             response = self.s3_client.get_object(Bucket=self.bucket, Key=self.key)
-            return response["Body"].read()
+            schema_bytes = response["Body"].read()
+            logger.debug(f"XSD schema downloaded successfully from S3, size: {len(schema_bytes)} bytes")
+            return schema_bytes
         except Exception as e:
+            logger.error(f"Failed to download XSD schema from S3: {self.bucket}/{self.key}", exc_info=True)
             raise Exception(f"Errore nel recupero dello schema da S3 ({self.bucket}/{self.key}): {e}")
 
 
@@ -164,6 +177,7 @@ class FatturaPAXSDValidator:
     def xsd_schema(self) -> etree.XMLSchema:
         """Lazy loading dello schema XSD"""
         if self._xsd_schema is None:
+            logger.debug("Loading XSD schema for validation")
             # Se il provider è Local, usa il file direttamente per risolvere import relativi
             if isinstance(self.schema_provider, LocalXSDSchemaProvider):
                 schema_doc = etree.parse(str(self.schema_provider.xsd_path))
@@ -174,6 +188,7 @@ class FatturaPAXSDValidator:
                 schema_doc = etree.parse(BytesIO(schema_content), parser)
 
             self._xsd_schema = etree.XMLSchema(schema_doc)
+            logger.debug("XSD schema loaded and compiled successfully")
 
         return self._xsd_schema
 
@@ -187,6 +202,7 @@ class FatturaPAXSDValidator:
         Returns:
             ValidationResult con esito e eventuali errori
         """
+        logger.debug(f"Validating XML string, size: {len(xml_content)} bytes")
         try:
             # Parse XML
             xml_doc = etree.fromstring(xml_content.encode("utf-8"))
@@ -195,14 +211,17 @@ class FatturaPAXSDValidator:
             is_valid = self.xsd_schema.validate(xml_doc)
 
             if is_valid:
+                logger.info("XML validation successful")
                 return ValidationResult(is_valid=True)
 
             # Estrai errori
             errors = self._extract_errors(self.xsd_schema.error_log)
+            logger.warning(f"XML validation failed with {len(errors)} error(s)")
             return ValidationResult(is_valid=False, errors=errors)
 
         except etree.XMLSyntaxError as e:
             # Errore di parsing XML
+            logger.error(f"XML syntax error at line {e.lineno}: {e.msg}")
             error = ValidationError(
                 message=f"Errore di sintassi XML: {e.msg}",
                 line=e.lineno,
@@ -212,6 +231,7 @@ class FatturaPAXSDValidator:
 
         except Exception as e:
             # Altri errori
+            logger.error(f"Validation error: {str(e)}", exc_info=True)
             error = ValidationError(message=f"Errore durante la validazione: {str(e)}")
             return ValidationResult(is_valid=False, errors=[error])
 
@@ -227,7 +247,10 @@ class FatturaPAXSDValidator:
         """
         xml_path = Path(xml_path) if isinstance(xml_path, str) else xml_path
 
+        logger.info(f"Validating XML file: {xml_path}")
+
         if not xml_path.exists():
+            logger.error(f"XML file not found: {xml_path}")
             error = ValidationError(message=f"File XML non trovato: {xml_path}")
             return ValidationResult(is_valid=False, errors=[error])
 

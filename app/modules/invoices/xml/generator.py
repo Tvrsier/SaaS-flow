@@ -4,8 +4,18 @@ Generatore XML per FatturaPA secondo schema VFPR12 v1.2.3
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
+
+from app.logger import logger
+
+if TYPE_CHECKING:
+    try:
+        from mypy_boto3_s3.client import S3Client
+    except ImportError:
+        S3Client = object  # type: ignore[misc,assignment]
 
 from app.modules.invoices.xml.models import (
     FatturaElettronica,
@@ -60,6 +70,8 @@ class FatturaPAXMLGenerator:
         Returns:
             Stringa XML
         """
+        logger.debug(f"Generating XML for invoice {self._get_filename(fattura)}")
+
         # Registra il namespace di default
         from xml.etree.ElementTree import register_namespace
         register_namespace("", self.namespace)
@@ -98,6 +110,7 @@ class FatturaPAXMLGenerator:
         # Aggiungi dichiarazione XML con encoding standard
         xml_str = f'<?xml version="{XMLDeclaration.VERSION}" encoding="{XMLDeclaration.ENCODING}"?>\n' + xml_str
 
+        logger.debug(f"XML generated successfully, size: {len(xml_str)} bytes")
         return xml_str
 
     def _add_header(self, parent: Element, header: FatturaElettronicaHeader) -> None:
@@ -622,3 +635,117 @@ class FatturaPAXMLGenerator:
         format_str = f"{{:.{decimal_places}f}}"
         text = format_str.format(value)
         return self._add_element(parent, tag, text)
+
+    def _get_filename(self, fattura: FatturaElettronica) -> str:
+        """
+        Genera il nome del file secondo il pattern SDI: <IdPaese><IdCodice>_<ProgressivoInvio>.xml
+
+        Args:
+            fattura: Struttura dati della fattura
+
+        Returns:
+            Nome del file (es: IT12345678901_00001.xml)
+        """
+        id_paese = fattura.FatturaElettronicaHeader.DatiTrasmissione.IdTrasmittente.IdPaese
+        id_codice = fattura.FatturaElettronicaHeader.DatiTrasmissione.IdTrasmittente.IdCodice
+        progressivo = fattura.FatturaElettronicaHeader.DatiTrasmissione.ProgressivoInvio
+
+        return f"{id_paese}{id_codice}_{progressivo}.xml"
+
+    def save_to_file(self, fattura: FatturaElettronica, directory: str | Path, pretty_print: bool = True) -> Path:
+        """
+        Salva l'XML della fattura in un file locale
+
+        Args:
+            fattura: Struttura dati della fattura
+            directory: Directory dove salvare il file
+            pretty_print: Se True, formatta l'XML con indentazione
+
+        Returns:
+            Path del file salvato
+
+        Example:
+            >>> generator = FatturaPAXMLGenerator()
+            >>> file_path = generator.save_to_file(fattura, "/path/to/invoices")
+            >>> print(file_path)  # /path/to/invoices/IT12345678901_00001.xml
+        """
+        directory_path = Path(directory)
+        directory_path.mkdir(parents=True, exist_ok=True)
+
+        filename = self._get_filename(fattura)
+        file_path = directory_path / filename
+
+        logger.info(f"Saving invoice to file: {file_path}")
+
+        xml_content = self.generate_xml(fattura, pretty_print=pretty_print)
+
+        file_path.write_text(xml_content, encoding="utf-8")
+
+        logger.info(f"Invoice saved successfully to {file_path}")
+        return file_path
+
+    def save_to_s3(
+        self,
+        fattura: FatturaElettronica,
+        bucket: str,
+        s3_prefix: str = "",
+        s3_client: S3Client | None = None,
+        pretty_print: bool = True,
+    ) -> str:
+        """
+        Salva l'XML della fattura su AWS S3
+
+        Args:
+            fattura: Struttura dati della fattura
+            bucket: Nome del bucket S3
+            s3_prefix: Prefisso/path S3 (es: "invoices/2024/")
+            s3_client: Client boto3 S3 (opzionale, viene creato se non fornito)
+            pretty_print: Se True, formatta l'XML con indentazione
+
+        Returns:
+            Chiave S3 completa del file salvato (es: "invoices/2024/IT12345678901_00001.xml")
+
+        Raises:
+            Exception: Se boto3 non è installato o errore durante upload
+
+        Example:
+            >>> generator = FatturaPAXMLGenerator()
+            >>> s3_key = generator.save_to_s3(fattura, "my-invoices-bucket", "2024/")
+            >>> print(s3_key)  # 2024/IT12345678901_00001.xml
+        """
+        try:
+            import boto3
+        except ImportError:
+            logger.error("boto3 not installed for S3 operations")
+            raise Exception(
+                "boto3 is required for S3 operations. "
+                "Install it with: pip install boto3"
+            )
+
+        if s3_client is None:
+            logger.debug("Creating default S3 client")
+            s3_client = boto3.client("s3")  # type: ignore[assignment]
+
+        filename = self._get_filename(fattura)
+
+        # Rimuovi eventuali slash iniziali/finali dal prefix e costruisci la key
+        s3_prefix_clean = s3_prefix.strip("/")
+        s3_key = f"{s3_prefix_clean}/{filename}" if s3_prefix_clean else filename
+
+        logger.info(f"Saving invoice to S3: s3://{bucket}/{s3_key}")
+
+        xml_content = self.generate_xml(fattura, pretty_print=pretty_print)
+
+        try:
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=s3_key,
+                Body=xml_content.encode("utf-8"),
+                ContentType="application/xml",
+            )
+            logger.info(f"Invoice uploaded successfully to s3://{bucket}/{s3_key}")
+        except Exception as e:
+            logger.error(f"Failed to upload invoice to S3: {bucket}/{s3_key}", exc_info=True)
+            raise Exception(f"Errore nel caricamento su S3 ({bucket}/{s3_key}): {e}")
+
+        return s3_key

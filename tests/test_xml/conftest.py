@@ -31,7 +31,7 @@ from app.modules.invoices.schemas.request import (
 @pytest.fixture
 def project_root() -> Path:
     """Radice del progetto"""
-    return Path(__file__).parent.parent
+    return Path(__file__).parent.parent.parent
 
 
 @pytest.fixture

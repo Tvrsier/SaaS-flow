@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from app.logger import logger
+
 from app.modules.invoices.schemas.request import InvoiceCreatePayload
 from app.modules.invoices.services.invoice_validator import InvoiceValidator, ValidationResult
 from app.modules.invoices.xml.converter import FatturaPAConverter
@@ -55,24 +57,32 @@ class FatturaPAService:
         Returns:
             XMLGenerationResult con l'XML generato o eventuali errori
         """
+        logger.info("Starting XML generation process")
+
         # Validazione (se richiesta)
         validation_result = None
         if validate:
+            logger.debug("Validating invoice data")
             validation_result = self.validator.validate(invoice)
             if not validation_result.is_valid:
+                logger.warning(f"Invoice validation failed: {len(validation_result.errors)} error(s)")
                 return XMLGenerationResult(
                     success=False,
                     validation_result=validation_result,
                     error_message=f"Validation failed: {', '.join(validation_result.errors)}",
                 )
+            logger.debug("Invoice validation passed")
 
         try:
             # Conversione
+            logger.debug("Converting invoice to FatturaElettronica structure")
             fattura_elettronica = self.converter.convert(invoice)
 
             # Generazione XML
+            logger.debug("Generating XML from FatturaElettronica")
             xml_content = self.generator.generate_xml(fattura_elettronica, pretty_print=pretty_print)
 
+            logger.info("XML generation completed successfully")
             return XMLGenerationResult(
                 success=True,
                 xml_content=xml_content,
@@ -80,6 +90,7 @@ class FatturaPAService:
             )
 
         except Exception as e:
+            logger.error(f"XML generation failed: {str(e)}", exc_info=True)
             return XMLGenerationResult(
                 success=False,
                 validation_result=validation_result,

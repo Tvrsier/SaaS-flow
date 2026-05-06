@@ -6,6 +6,8 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
+from app.logger import logger
+
 from app.modules.invoices.domain.enums import (
     FormatoTrasmissione,
     SubjectType,
@@ -56,8 +58,12 @@ class FatturaPAConverter:
         Returns:
             FatturaElettronica pronta per la generazione XML
         """
+        logger.info(f"Converting invoice from API format to FatturaElettronica XML")
+        logger.debug(f"Invoice data: issuer={invoice.issuer.vat_number}, customer={invoice.customer.vat_number}, lines={len(invoice.lines)}")
+
         # Calcola i totali
         calculated = self.calculator.calculate(invoice)
+        logger.debug(f"Calculated totals: total={calculated.total_amount}, vat={calculated.total_vat}")
 
         # Determina formato trasmissione (semplificato: sempre FPR12 per privati)
         formato = FormatoTrasmissione.FPR12
@@ -68,6 +74,7 @@ class FatturaPAConverter:
         # Genera body
         body = self._build_body(invoice, calculated)
 
+        logger.info("Invoice conversion completed successfully")
         return FatturaElettronica(
             versione=formato.value,
             FatturaElettronicaHeader=header,
