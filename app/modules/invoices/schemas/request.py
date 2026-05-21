@@ -262,7 +262,7 @@ class InvoiceCreatePayload(BaseModel):
 
     issuer: PartyPayload
     customer: PartyPayload
-    items: List[InvoiceLinePayload] = Field(..., min_length=1)
+    items: List[InvoiceLinePayload] = Field(...)
 
     payment: PaymentPayload
     stamp_duty: StampDutyPayload = Field(default_factory=StampDutyPayload)

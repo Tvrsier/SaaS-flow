@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from logging import getLogger
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,10 +13,10 @@ from app.auth import create_access_token, decode_access_token
 from app.config.settings import get_settings
 from app.db.models.user import User
 from app.db.session import get_db
+from app.logger import logger
 from app.modules.auth.schemas import AuthLoginResponse, AuthMeResponse, AuthRegisterResponse
 from app.schemas.user import UserCreate, UserLogin, UserRead
 
-logger = getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -113,7 +112,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already in use")
     db.refresh(user)
     logger.debug("Register refreshed user email=%s id=%s", user.email, user.id)
-    token = create_access_token(user.email)
+    token = create_access_token(user.id, user.email)
     logger.info("Register token issued email=%s", user.email)
     return {"access_token": token, "user": UserRead.model_validate(user)}
 
@@ -148,7 +147,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     db.refresh(user)
     logger.debug("Login refreshed user email=%s last_login_at=%s", user.email, user.last_login_at)
-    token = create_access_token(user.email)
+    token = create_access_token(user.id, user.email)
     logger.info("Login token issued email=%s", user.email)
     return {"access_token": token, "user": UserRead.model_validate(user)}
 

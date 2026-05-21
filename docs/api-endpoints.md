@@ -94,7 +94,7 @@ Request
 - Body (JSON) — campi comuni:
   ```json
   {
-    "accountType": "privato" | "libero_professionista" | "azienda" | "ditta_individuale" | "pubblica_amministrazione",
+    "accountType": "privato",
     "email": "string",
     "password": "string",
     "codiceFiscale": "string",
@@ -201,7 +201,8 @@ Request
 
 Response attesa
 - `200 OK`
-- Può essere un array o un wrapper paginato.
+- Il backend può restituire un array semplice oppure un wrapper paginato.
+- Contratto di riferimento: `docs/invoices.get.schema.json`
 - Esempio wrapper:
   ```json
   {
@@ -210,7 +211,8 @@ Response attesa
     ],
     "page": 1,
     "perPage": 20,
-    "total": 1
+    "total": 1,
+    "last_invoice_number": "2026-001"
   }
   ```
 
@@ -227,15 +229,24 @@ Errori da restituire
 Request
 - Metodo: POST
 - Header: `Content-Type: application/json`, `Authorization: Bearer <token>`
-- Body: oggetto fattura; lo shape esatto dipende dal dominio, ma il backend deve almeno validare:
-  - cliente
-  - data
-  - righe fattura
-  - totale
+- Body: oggetto fattura secondo il contratto `docs/invoices.post.schema.json`
+- Campi chiave che il backend deve validare:
+  - `mode`
+  - `invoiceNumber`
+  - `issueDate`
+  - `currency`
+  - `documentType`
+  - `client`
+  - `lines`
+  - `subtotal`
+  - `vatTotal`
+  - `total`
+  - `attachments` opzionale
 
 Response attesa
 - `201 Created` o `200 OK`
-- Restituisce la fattura creata con `id`.
+- Restituisce la fattura creata con `id` e dati normalizzati.
+- Il payload di risposta può essere strutturato in modo esteso purché includa almeno l’identificativo e i valori principali appena creati.
 
 Errori da restituire
 - `400 Bad Request` / `422 Unprocessable Entity` — validazione fallita
@@ -254,11 +265,13 @@ Request
   ```json
   {
     "invoiceId": "string",
-    "recipients": ["string"] | "string",
-    "method": "email" | "pec",
+    "recipients": ["string"],
+    "method": "email",
     "message": "string (opzionale)"
   }
   ```
+- `recipients` può essere gestito dal backend anche come singola stringa, ma l’esempio mantiene la forma array per restare JSON valido.
+- `method` accetta `email` o `pec`.
 
 Response attesa
 - `200 OK`

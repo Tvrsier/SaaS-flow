@@ -61,7 +61,7 @@ class FatturaPAService:
 
         # Validazione (se richiesta)
         validation_result = None
-        if validate:
+        if validate and isinstance(invoice, InvoiceCreatePayload):
             logger.debug("Validating invoice data")
             validation_result = self.validator.validate(invoice)
             if not validation_result.is_valid:

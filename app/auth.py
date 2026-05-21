@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from logging import getLogger
 from typing import Any
 from uuid import UUID
 
@@ -9,8 +8,7 @@ import jwt
 from passlib.context import CryptContext
 
 from app.config.settings import get_settings
-
-logger = getLogger("uvicorn.error")
+from app.logger import logger
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -25,7 +23,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(
-    subject: str | UUID,
+    subject: UUID,
+    email: str,
     expires_minutes: int | None = None,
     extra_claims: dict[str, Any] | None = None,
 ) -> str:
@@ -34,6 +33,7 @@ def create_access_token(
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": str(subject),
+        "email": email,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=minutes)).timestamp()),
     }
@@ -48,8 +48,13 @@ def create_access_token(
 def decode_access_token(token: str) -> dict[str, Any]:
     settings = get_settings()
     logger.debug("Decoding JWT token (len=%s)", len(token))
+    payload: dict[str, Any] = {}
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        logger.warning("User token is expired")
+    except jwt.InvalidSignatureError:
+        logger.warning("User token is invalid")
     except Exception:
         logger.exception("JWT decode failed")
         raise

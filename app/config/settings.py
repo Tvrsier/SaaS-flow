@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     allow_origins: str = Field(default="*", alias="ALLOW_ORIGINS")
     public_data_dir: str = Field(default="./data/public", alias="PUBLIC_DATA_DIR")
     assets_dir: str = Field(default="./data/assets", alias="ASSETS_DIR")
+    use_proxy: bool = Field(default=False, alias="USE_PROXY")
 
     @staticmethod
     def _clean_env_value(value: str | None) -> str | None:

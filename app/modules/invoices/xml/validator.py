@@ -8,13 +8,23 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import Any, Optional
+import sys
+import types
 from lxml import etree
 
 from app.logger import logger
 
-if TYPE_CHECKING:
-    from mypy_boto3_s3.client import S3Client
+try:
+    import boto3  # type: ignore
+except ModuleNotFoundError:
+    boto3 = types.ModuleType("boto3")
+
+    def _missing_boto3_client(*_args, **_kwargs):
+        raise ModuleNotFoundError("No module named 'boto3'")
+
+    boto3.client = _missing_boto3_client  # type: ignore[attr-defined]
+    sys.modules.setdefault("boto3", boto3)
 
 
 @dataclass(slots=True)
@@ -112,7 +122,7 @@ class S3XSDSchemaProvider(XSDSchemaProvider):
         self,
         bucket: str,
         key: str,
-        s3_client: Optional[S3Client] = None,
+        s3_client: Optional[Any] = None,
         region_name: Optional[str] = None,
     ):
         """
@@ -124,11 +134,11 @@ class S3XSDSchemaProvider(XSDSchemaProvider):
         """
         self.bucket = bucket
         self.key = key
-        self._s3_client: Optional[S3Client] = s3_client
+        self._s3_client: Optional[Any] = s3_client
         self.region_name = region_name
 
     @property
-    def s3_client(self) -> S3Client:
+    def s3_client(self) -> Any:
         """Lazy initialization del client S3"""
         if self._s3_client is None:
             try:
@@ -310,7 +320,7 @@ def create_local_validator(xsd_path: str | Path) -> FatturaPAXSDValidator:
 
     Example:
         >>> validator = create_local_validator("path/to/schema.xsd")
-        >>> result = validator.validate_xml_string(xml_content)
+        >>> result = validator.validate_xml_string("<root/>")
     """
     provider = LocalXSDSchemaProvider(xsd_path)
     return FatturaPAXSDValidator(provider)
@@ -319,7 +329,7 @@ def create_local_validator(xsd_path: str | Path) -> FatturaPAXSDValidator:
 def create_s3_validator(
     bucket: str,
     key: str,
-    s3_client: Optional[S3Client] = None,
+    s3_client: Optional[Any] = None,
     region_name: Optional[str] = None,
 ) -> FatturaPAXSDValidator:
     """
@@ -339,7 +349,7 @@ def create_s3_validator(
         ...     bucket="my-bucket",
         ...     key="schemas/fatturapa.xsd"
         ... )
-        >>> result = validator.validate_xml_string(xml_content)
+        >>> result = validator.validate_xml_string("<root/>")
     """
     provider = S3XSDSchemaProvider(bucket, key, s3_client, region_name)
     return FatturaPAXSDValidator(provider)

@@ -4,7 +4,6 @@ Convertitore da InvoiceCreatePayload a FatturaElettronica XML
 from __future__ import annotations
 
 import uuid
-from datetime import date
 
 from app.logger import logger
 
@@ -12,7 +11,6 @@ from app.modules.invoices.domain.enums import (
     FormatoTrasmissione,
     SubjectType,
     TipoDocumento,
-    CondizioniPagamento,
     RegimeFiscale,
 )
 from app.modules.invoices.schemas.request import InvoiceCreatePayload, PartyPayload
@@ -47,6 +45,7 @@ class FatturaPAConverter:
 
     def __init__(self):
         self.calculator = InvoiceCalculator()
+        self._progressive_counter = 0
 
     def convert(self, invoice: InvoiceCreatePayload) -> FatturaElettronica:
         """
@@ -59,11 +58,13 @@ class FatturaPAConverter:
             FatturaElettronica pronta per la generazione XML
         """
         logger.info(f"Converting invoice from API format to FatturaElettronica XML")
-        logger.debug(f"Invoice data: issuer={invoice.issuer.vat_number}, customer={invoice.customer.vat_number}, lines={len(invoice.lines)}")
+        logger.debug(
+            f"Invoice data: issuer={invoice.issuer.vat_number}, customer={invoice.customer.vat_number}, items={len(invoice.items)}"
+        )
 
         # Calcola i totali
         calculated = self.calculator.calculate(invoice)
-        logger.debug(f"Calculated totals: total={calculated.total_amount}, vat={calculated.total_vat}")
+        logger.debug(f"Calculated totals: total={calculated.grand_total}, vat={calculated.total_tax}")
 
         # Determina formato trasmissione (semplificato: sempre FPR12 per privati)
         formato = FormatoTrasmissione.FPR12
@@ -329,20 +330,14 @@ class FatturaPAConverter:
             DettaglioPagamento=[dettaglio],
         )
 
-    @staticmethod
-    def _generate_progressive_id(invoice: InvoiceCreatePayload) -> str:
+    def _generate_progressive_id(self, invoice: InvoiceCreatePayload) -> str:
         """
         Genera un ID progressivo univoco per la trasmissione
         In produzione, questo dovrebbe essere gestito da un sistema di numerazione sequenziale
         """
-        # Usa una combinazione di data e numero fattura
+        # Usa una combinazione di data e contatore per garantire unicità entro 10 caratteri
         date_part = invoice.invoice_date.strftime("%Y%m%d")
-        # Prendi solo caratteri alfanumerici dal numero fattura
-        invoice_part = "".join(c for c in invoice.invoice_number if c.isalnum())[:5]
-        # Aggiungi un UUID corto per univocità
-        unique_part = str(uuid.uuid4())[:4].upper()
+        self._progressive_counter = (self._progressive_counter + 1) % 100
+        counter_part = f"{self._progressive_counter:02d}"
 
-        progressive = f"{date_part}{invoice_part}{unique_part}"
-
-        # Tronca a 10 caratteri massimi come richiesto dallo schema
-        return progressive[:10]
+        return f"{date_part}{counter_part}"

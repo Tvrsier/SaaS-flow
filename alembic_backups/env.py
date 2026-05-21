@@ -11,9 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config.settings import get_settings
-from app.db.base import Base
-from app.db.models import user as user_model  # noqa: F401
+from app.config.settings import get_settings  # noqa: E402
+from app.db.base import Base  # noqa: E402
+from app.db.models import invoice as invoice_model  # noqa: F401, E402
+from app.db.models import user as user_model  # noqa: F401, E402
 
 config = context.config
 if config.config_file_name is not None:

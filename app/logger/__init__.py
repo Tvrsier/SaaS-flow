@@ -2,6 +2,7 @@ import inspect
 import logging.handlers
 import os
 from pathlib import Path
+from typing import Optional
 
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "gestpro.log"
@@ -49,20 +50,40 @@ class SmartClassFormatter(logging.Formatter):
         return super().format(record)
 
 
-handler = logging.handlers.TimedRotatingFileHandler(
-    LOG_FILE, when="midnight", interval=1, backupCount=5, encoding="utf-8"
-)
-console = logging.StreamHandler()
-
 fmt = "%(asctime)s - [%(levelname)s] - %(relpath)s.%(classname)s.%(funcName)s(): %(message)s {%(lineno)d}"
 formatter = SmartClassFormatter(fmt)
-
-handler.setFormatter(formatter)
-console.setFormatter(formatter)
-
 logger = logging.getLogger("GestPro")
-logger.setLevel(os.getenv("LOG_LEVEL", "DEBUG").upper())
-logger.addFilter(ClassNameFilter())
-logger.addHandler(handler)
-logger.addHandler(console)
-logger.propagate = False
+
+
+def _build_handlers() -> list[logging.Handler]:
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        LOG_FILE, when="midnight", interval=1, backupCount=5, encoding="utf-8"
+    )
+    console_handler = logging.StreamHandler()
+    for handler in (file_handler, console_handler):
+        handler.setFormatter(formatter)
+        handler.addFilter(ClassNameFilter())
+    return [file_handler, console_handler]
+
+
+def configure_logging(level: Optional[object] = None) -> None:
+    log_level = level if level is not None else os.getenv("LOG_LEVEL", "DEBUG").upper()
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(log_level)
+
+    for handler in _build_handlers():
+        root_logger.addHandler(handler)
+
+    logger.handlers.clear()
+    logger.setLevel(log_level)
+    logger.propagate = True
+
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.setLevel(log_level)
+        uvicorn_logger.propagate = True
+
+
+__all__ = ["ClassNameFilter", "SmartClassFormatter", "configure_logging", "logger"]
