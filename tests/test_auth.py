@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 from datetime import datetime, timezone
 from logging import getLogger
-from typing import Generator
+from typing import Any, Generator, cast
 from uuid import UUID, uuid4
 
 warnings.filterwarnings(
@@ -63,12 +63,13 @@ def client(monkeypatch, db_session: Session) -> Generator[TestClient, None, None
     def override_get_db() -> Generator[Session, None, None]:
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
+    overrides = cast(Any, app).dependency_overrides
+    overrides[get_db] = override_get_db
 
     try:
         yield TestClient(app)
     finally:
-        app.dependency_overrides.clear()
+        overrides.clear()
 
 
 def _create_user(db: Session, **kwargs) -> User:
@@ -264,3 +265,207 @@ def test_me_rejects_expired_token(
     )
 
     assert response.status_code == 401
+
+
+def test_invoice_test_header_bypasses_auth_in_dev(client: TestClient, db_session: Session, monkeypatch, patch_user_ids):
+    monkeypatch.setenv("SCOPE", "dev")
+    get_settings.cache_clear()
+    _create_user(db_session, email="dev@example.com")
+
+    response = client.post(
+        "/invoices",
+        json={
+            "mode": 1,
+            "invoiceNumber": "2026-099",
+            "issueDate": "2026-05-15",
+            "currency": "EUR",
+            "documentType": "TD01",
+            "client": {
+                "clientType": "company",
+                "companyName": "Demo S.r.l.",
+                "vatNumber": "12345678901",
+                "taxCode": "01234567890",
+                "address": "Via Roma 1",
+                "city": "Milano",
+                "postalCode": "20100",
+                "province": "MI",
+                "country": "IT",
+            },
+            "lines": [
+                {
+                    "numberLine": 1,
+                    "description": "Servizio consulenza",
+                    "quantity": 2,
+                    "unitMeasure": "h",
+                    "unitPrice": 50,
+                    "lineTotal": 100,
+                    "vatRate": 22,
+                }
+            ],
+            "subtotal": 100,
+            "vatTotal": 22,
+            "total": 122,
+            "attachments": [],
+        },
+        headers={"Invoice-Form-Test": "true"},
+    )
+
+    assert response.status_code == 201
+
+
+@pytest.mark.parametrize("scope", [None, "prod"])
+def test_invoice_test_header_does_not_bypass_auth_outside_dev(client: TestClient, monkeypatch, scope):
+    monkeypatch.setenv("SCOPE", scope or "")
+    get_settings.cache_clear()
+
+    response = client.post(
+        "/invoices",
+        json={
+            "mode": 1,
+            "invoiceNumber": "2026-100",
+            "issueDate": "2026-05-15",
+            "currency": "EUR",
+            "documentType": "TD01",
+            "client": {
+                "clientType": "company",
+                "companyName": "Demo S.r.l.",
+                "vatNumber": "12345678901",
+                "taxCode": "01234567890",
+                "address": "Via Roma 1",
+                "city": "Milano",
+                "postalCode": "20100",
+                "province": "MI",
+                "country": "IT",
+            },
+            "lines": [
+                {
+                    "numberLine": 1,
+                    "description": "Servizio consulenza",
+                    "quantity": 2,
+                    "unitMeasure": "h",
+                    "unitPrice": 50,
+                    "lineTotal": 100,
+                    "vatRate": 22,
+                }
+            ],
+            "subtotal": 100,
+            "vatTotal": 22,
+            "total": 122,
+            "attachments": [],
+        },
+        headers={"Invoice-Form-Test": "true"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_register_company_persists_user_address(client: TestClient, db_session: Session, patch_user_ids):
+    response = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda@example.com",
+            "password": "whatever123",
+            "codiceFiscale": "01234567890",
+            "partitaIva": "01234567890",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "residenceCountry": "IT",
+            "residenceProvince": "MI",
+            "residenceComune": "Milano",
+            "residenceAddress": "Via Roma 1",
+            "residencePostal": "20100",
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["user"]["email"] == "azienda@example.com"
+
+    # verifica che il record user sia presente e che la relazione indirizzo sia stata inserita
+    from app.db.models.user import User, UserAddress
+    from sqlalchemy import select
+
+    user = db_session.scalar(select(User).where(User.email == "azienda@example.com"))
+    assert user is not None
+    address = db_session.scalar(select(UserAddress).where(UserAddress.user_id == user.id))
+    assert address is not None
+    assert address.address == "Via Roma 1"
+
+
+def test_register_company_requires_address_fields(client: TestClient):
+    response = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda2@example.com",
+            "password": "whatever123",
+            "codiceFiscale": "01234567890",
+            "partitaIva": "01234567890",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "residenceCountry": None,
+            "residenceProvince": None,
+            "residenceComune": None,
+            "residenceAddress": None,
+            "residencePostal": None,
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_me_addresses_returns_saved_user_addresses(client: TestClient, db_session: Session, patch_user_ids):
+    response = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda-address@example.com",
+            "password": "whatever123",
+            "codiceFiscale": "01234567890",
+            "partitaIva": "01234567890",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "residenceCountry": "IT",
+            "residenceProvince": "MI",
+            "residenceComune": "Milano",
+            "residenceAddress": "Via Roma 1",
+            "residencePostal": "20100",
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+        },
+    )
+    assert response.status_code == 201
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "azienda-address@example.com", "password": "AtlasFatturazione2025.."},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    response = client.get("/auth/me/addresses", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["address"] == "Via Roma 1"
+

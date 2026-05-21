@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     public_data_dir: str = Field(default="./data/public", alias="PUBLIC_DATA_DIR")
     assets_dir: str = Field(default="./data/assets", alias="ASSETS_DIR")
     use_proxy: bool = Field(default=False, alias="USE_PROXY")
+    scope: str | None = Field(default=None, alias="SCOPE")
 
     @staticmethod
     def _clean_env_value(value: str | None) -> str | None:
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
         self.database_url = self._clean_env_value(self.database_url) or self._clean_env_value(os.environ.get("POSTGRES_CONNECTION_STRING"))
         self.jwt_secret_key = self._clean_env_value(self.jwt_secret_key) or self._clean_env_value(os.environ.get("JWT_SECRET"))
         self.mock_login_password = self._clean_env_value(self.mock_login_password) or self._clean_env_value(os.environ.get("MOCKED_LOGIN_PASSWORD"))
+        self.scope = self._clean_env_value(self.scope) or self._clean_env_value(os.environ.get("SCOPE"))
         if not self.database_url:
             raise ValueError("POSTGRES_CONNECTION_STRING is required")
         if not self.jwt_secret_key:

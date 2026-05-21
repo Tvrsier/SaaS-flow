@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum as SAEnum, Index, String, func
+from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,3 +59,28 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     clients: Mapped[list[Client]] = relationship(back_populates="company", cascade="all, delete-orphan")
+    addresses: Mapped[list["UserAddress"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class UserAddress(Base):
+    __tablename__ = "user_addresses"
+    __table_args__ = (
+        Index("ix_user_addresses_user_id", "user_id"),
+        Index("ix_user_addresses_account_type", "account_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    account_type: Mapped[AccountType] = mapped_column(SAEnum(AccountType, name="account_type"), nullable=False)
+    address_label: Mapped[str] = mapped_column(String(64), nullable=False, default="primary", server_default=text("'primary'"))
+    country: Mapped[str] = mapped_column(String(2), nullable=False, default="IT", server_default=text("'IT'"))
+    province: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    address: Mapped[str] = mapped_column(String(255), nullable=False)
+    street_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped[User] = relationship(back_populates="addresses")

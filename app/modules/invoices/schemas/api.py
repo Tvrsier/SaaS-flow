@@ -269,3 +269,32 @@ class InvoicesListResponse(BaseModel):
     total: int | None = None
     count: int | None = None
 
+
+class ClientRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    client_type: InvoiceClientType = Field(alias="clientType")
+    first_name: str | None = Field(default=None, alias="firstName")
+    last_name: str | None = Field(default=None, alias="lastName")
+    company_name: str | None = Field(default=None, alias="companyName")
+    vat_number: str | None = Field(default=None, alias="vatNumber")
+    tax_code: str | None = Field(default=None, alias="taxCode")
+    address: str
+    city: str | None = None
+    postal_code: str | None = Field(default=None, alias="postalCode")
+    province: str | None = None
+    country: str
+    pec: str | None = None
+    recipient_code: str | None = Field(default=None, alias="recipientCode")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+
+class ClientsListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    data: list[ClientRead]
+    items: list[ClientRead] | None = None
+    clients: list[ClientRead] | None = None
+    results: list[ClientRead] | None = None

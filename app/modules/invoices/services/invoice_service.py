@@ -4,19 +4,20 @@ import base64
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
 from app.db.models.invoice import Client, Invoice, InvoiceAttachment, InvoiceLine, InvoiceVatSummary
 from app.db.models.user import User
 from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode
-from app.modules.invoices.schemas.api import InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceCreateRequest, InvoiceLinePayload
+from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceLinePayload
 
 TWOPLACES = Decimal("0.01")
 ZERO = Decimal("0.00")
@@ -35,21 +36,50 @@ class InvoiceService:
         self.db = db
         self.settings = get_settings()
 
-    def create_invoice(self, current_user: User, payload: InvoiceCreateRequest) -> dict[str, object]:
+    def list_clients(self, current_user: User, q: str | None = None) -> ClientsListResponse:
+        self._ensure_user_can_issue(current_user)
+        query = select(Client).where(Client.company_id == current_user.id, Client.deleted_at.is_(None)).order_by(Client.created_at.asc(), Client.company_name.asc())
+
+        if q:
+            pattern = f"%{q.strip()}%"
+            query = query.where(
+                or_(
+                    Client.first_name.ilike(pattern),
+                    Client.last_name.ilike(pattern),
+                    Client.company_name.ilike(pattern),
+                    Client.vat_number.ilike(pattern),
+                    Client.tax_code.ilike(pattern),
+                    Client.address.ilike(pattern),
+                    Client.city.ilike(pattern),
+                )
+            )
+
+        clients = self.db.scalars(query).all()
+        data = [self._serialize_client(client) for client in clients]
+        return ClientsListResponse(data=data, items=data, clients=data, results=data)
+
+    def create_invoice(
+        self,
+        current_user: User,
+        payload: InvoiceCreateRequest,
+        invoice_form_test: str | None = None,
+    ) -> dict[str, object]:
         self._ensure_user_can_issue(current_user)
         calc = self._calculate(payload)
         self._validate_calculated_totals(payload, calc)
 
+        test_mode = self._is_test_mode(invoice_form_test)
         written_files: list[Path] = []
         try:
             client = self._create_client(current_user, payload.client)
-            self.db.add(client)
-            self.db.flush()
+            if not test_mode:
+                self.db.add(client)
+                self.db.flush()
 
             invoice = Invoice(
                 company_id=current_user.id,
                 customer_id=None,
-                client_id=client.id,
+                client_id=client.id if client.id is not None else None,
                 invoice_number=payload.invoice_number,
                 invoice_year=payload.issue_date.year,
                 invoice_section="",
@@ -74,12 +104,19 @@ class InvoiceService:
                 supplier_province=self._supplier_province(),
                 supplier_country=self._supplier_country(),
             )
-            self.db.add(invoice)
-            self.db.flush()
+            if test_mode:
+                now = datetime.now(timezone.utc)
+                invoice.id = uuid4()
+                invoice.created_at = now
+                invoice.updated_at = now
+                client.id = uuid4()
+                client.created_at = now
+                client.updated_at = now
+            else:
+                self.db.add(invoice)
+                self.db.flush()
 
             lines = [self._create_line(invoice.id, line) for line in payload.lines]
-            self.db.add_all(lines)
-
             vat_summaries = [
                 InvoiceVatSummary(
                     invoice_id=invoice.id,
@@ -90,20 +127,23 @@ class InvoiceService:
                 )
                 for vat_rate, nature, taxable_amount, vat_amount in calc.vat_groups
             ]
-            self.db.add_all(vat_summaries)
-
             attachments = self._create_attachments(invoice.id, payload.attachments, written_files)
-            self.db.add_all(attachments)
 
-            self.db.commit()
-            self.db.refresh(invoice)
-            self.db.refresh(client)
-            for line in lines:
-                self.db.refresh(line)
-            for summary in vat_summaries:
-                self.db.refresh(summary)
-            for attachment in attachments:
-                self.db.refresh(attachment)
+            if not test_mode:
+                self.db.add_all(lines)
+                self.db.add_all(vat_summaries)
+                self.db.add_all(attachments)
+                self.db.commit()
+                self.db.refresh(invoice)
+                self.db.refresh(client)
+                for line in lines:
+                    self.db.refresh(line)
+                for summary in vat_summaries:
+                    self.db.refresh(summary)
+                for attachment in attachments:
+                    self.db.refresh(attachment)
+            else:
+                self._cleanup_files(written_files)
 
             return self._serialize_invoice(invoice, client, lines, vat_summaries, attachments)
         except HTTPException:
@@ -154,6 +194,9 @@ class InvoiceService:
             "total": int(total),
             "count": len(data),
         }
+
+    def _is_test_mode(self, invoice_form_test: str | None) -> bool:
+        return isinstance(invoice_form_test, str) and invoice_form_test.lower() == "true"
 
     def _ensure_user_can_issue(self, current_user: User) -> None:
         if not current_user.is_active:
@@ -426,3 +469,22 @@ class InvoiceService:
             "issuedAt": invoice.issued_at,
         }
 
+    def _serialize_client(self, client: Client) -> ClientRead:
+        return ClientRead(
+            id=str(client.id),
+            clientType=InvoiceClientType(client.client_type.value.lower()),
+            firstName=client.first_name,
+            lastName=client.last_name,
+            companyName=client.company_name,
+            vatNumber=client.vat_number,
+            taxCode=client.tax_code,
+            address=client.address,
+            city=client.city,
+            postalCode=client.postal_code,
+            province=client.province,
+            country=client.country,
+            pec=client.pec,
+            recipientCode=client.recipient_code,
+            createdAt=client.created_at,
+            updatedAt=client.updated_at,
+        )

@@ -77,6 +77,93 @@ def auth_headers(company_user: User) -> dict[str, str]:
 
 
 @pytest.fixture()
+def company_client(db_session: Session, company_user: User) -> Client:
+    client = Client(
+        company_id=company_user.id,
+        client_type="COMPANY",
+        company_name="Demo S.r.l.",
+        vat_number="12345678901",
+        tax_code="01234567890",
+        address="Via Roma 1",
+        city="Milano",
+        postal_code="20100",
+        province="MI",
+        country="IT",
+        pec="demo@pec.it",
+        recipient_code="ABC1234",
+        deleted_at=None,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(client)
+    db_session.commit()
+    db_session.refresh(client)
+    return client
+
+
+@pytest.fixture()
+def private_client(db_session: Session, company_user: User) -> Client:
+    client = Client(
+        company_id=company_user.id,
+        client_type="PRIVATE",
+        first_name="Mario",
+        last_name="Rossi",
+        tax_code="RSSMRA80A01H501U",
+        address="Via Verdi 1",
+        city="Roma",
+        postal_code="00100",
+        province="RM",
+        country="IT",
+        recipient_code="0000000",
+        deleted_at=None,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(client)
+    db_session.commit()
+    db_session.refresh(client)
+    return client
+
+
+@pytest.fixture()
+def other_company_client(db_session: Session) -> Client:
+    other_user = User(
+        id=uuid4(),
+        email="other@example.com",
+        account_type=AccountType.azienda,
+        company_name="Other SRL",
+        codice_fiscale="11111111111",
+        partita_iva="11111111111",
+        is_active=True,
+        is_verified=True,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other_user)
+    db_session.flush()
+    client = Client(
+        company_id=other_user.id,
+        client_type="COMPANY",
+        company_name="Hidden S.r.l.",
+        vat_number="99999999999",
+        tax_code="99999999999",
+        address="Via Nascosta 1",
+        city="Torino",
+        postal_code="10100",
+        province="TO",
+        country="IT",
+        recipient_code="ABC9999",
+        deleted_at=None,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(client)
+    db_session.commit()
+    db_session.refresh(client)
+    return client
+
+
+@pytest.fixture()
 def invoice_payload() -> dict[str, object]:
     return {
         "mode": 1,
@@ -133,18 +220,19 @@ def test_create_invoice_persists_invoice_client_lines(client: TestClient, auth_h
     assert client_row is not None
 
 
-def test_get_invoices_returns_created_invoice(client: TestClient, auth_headers: dict[str, str], invoice_payload: dict[str, object]):
-    created = client.post("/invoices", json=invoice_payload, headers=auth_headers)
-    assert created.status_code == 201
+def test_create_invoice_with_test_header_does_not_persist_db_changes(client: TestClient, auth_headers: dict[str, str], db_session: Session, invoice_payload: dict[str, object]):
+    response = client.post(
+        "/invoices",
+        json=invoice_payload,
+        headers={**auth_headers, "Invoice-Form-Test": "true"},
+    )
 
-    response = client.get("/invoices", headers=auth_headers)
-    assert response.status_code == 200
-
+    assert response.status_code == 201
     body = response.json()
-    assert "data" in body
-    assert body["lastInvoiceNumber"] == "2026-001"
-    assert len(body["data"]) >= 1
-    assert any(item["invoiceNumber"] == "2026-001" and item["client"]["clientCode"] == "12345678901" for item in body["data"])
+    assert body["invoiceNumber"] == "2026-001"
+
+    assert db_session.scalar(select(Invoice).where(Invoice.invoice_number == "2026-001")) is None
+    assert db_session.scalar(select(Client).where(Client.company_name == "Demo S.r.l.")) is None
 
 
 def test_create_invoice_rejects_totals_mismatch(client: TestClient, auth_headers: dict[str, str], invoice_payload: dict[str, object]):
@@ -154,3 +242,31 @@ def test_create_invoice_rejects_totals_mismatch(client: TestClient, auth_headers
     response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
 
     assert response.status_code == 422
+
+
+def test_get_clients_returns_user_clients(client: TestClient, auth_headers: dict[str, str], company_client: Client, private_client: Client):
+    response = client.get("/invoices/clients", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "data" in body
+    assert len(body["data"]) == 2
+    assert {item["companyName"] or item["firstName"] for item in body["data"]} == {"Demo S.r.l.", "Mario"}
+
+
+def test_get_clients_filters_by_query(client: TestClient, auth_headers: dict[str, str], company_client: Client, private_client: Client):
+    response = client.get("/invoices/clients", params={"q": "demo"}, headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["companyName"] == "Demo S.r.l."
+
+
+def test_get_clients_only_returns_current_user_clients(client: TestClient, auth_headers: dict[str, str], company_client: Client, private_client: Client, other_company_client: Client):
+    response = client.get("/invoices/clients", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 2
+    assert all(item["companyName"] != "Hidden S.r.l." for item in body["data"])

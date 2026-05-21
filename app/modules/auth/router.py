@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -11,11 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, decode_access_token
 from app.config.settings import get_settings
-from app.db.models.user import User
+from app.db.models.user import AccountType, User, UserAddress
 from app.db.session import get_db
 from app.logger import logger
 from app.modules.auth.schemas import AuthLoginResponse, AuthMeResponse, AuthRegisterResponse
-from app.schemas.user import UserCreate, UserLogin, UserRead
+from app.schemas.user import UserAddressesResponse, UserAddressRead, UserCreate, UserLogin, UserRead
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -35,11 +35,47 @@ def _me_payload(user: User) -> AuthMeResponse:
     )
 
 
+def _is_invoice_test_request(request: Request | None) -> bool:
+    if request is None:
+        return False
+    return request.headers.get("Invoice-Form-Test", "").strip().lower() == "true"
+
+
+def _build_virtual_invoice_test_user() -> User:
+    now = datetime.now(timezone.utc)
+    user = User(
+        id=uuid4(),
+        email="invoice-test@local.dev",
+        account_type=AccountType.privato,
+        first_name="Invoice",
+        last_name="Test",
+        company_name="Frontend Test",
+        codice_fiscale="TEST00000000000",
+        partita_iva=None,
+        phone=None,
+        mobile=None,
+        is_active=True,
+        is_verified=True,
+        external_auth_provider="local",
+        external_auth_subject=None,
+        created_at=now,
+        updated_at=now,
+    )
+    return user
+
+
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
-    logger.debug("Resolving current user from bearer token present=%s", credentials is not None)
+    settings = get_settings()
+    logger.debug("Resolving current user from bearer token present=%s scope=%s", credentials is not None, settings.scope)
+
+    if settings.scope == "dev" and _is_invoice_test_request(request):
+        logger.info("Bypassing auth for invoice test request in dev scope")
+        return _build_virtual_invoice_test_user()
+
     if credentials is None or credentials.scheme.lower() != "bearer":
         logger.warning("Missing or invalid auth scheme for /auth/me")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
@@ -104,6 +140,21 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     logger.debug("Register created transient user email=%s", user.email)
     db.add(user)
     try:
+        db.flush()
+        if payload.account_type in {AccountType.azienda, AccountType.pubblica_amministrazione}:
+            db.add(
+                UserAddress(
+                    user_id=user.id,
+                    account_type=payload.account_type,
+                    address_label="primary",
+                    country=payload.residence_country or "IT",
+                    province=payload.residence_province,
+                    city=payload.residence_comune,
+                    postal_code=payload.residence_postal,
+                    address=payload.residence_address or "",
+                    street_number=None,
+                )
+            )
         db.commit()
         logger.info("Register committed email=%s id=%s", user.email, user.id)
     except IntegrityError:
@@ -156,3 +207,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 def me(current_user: User = Depends(get_current_user)) -> AuthMeResponse:
     logger.info("/auth/me success email=%s", current_user.email)
     return _me_payload(current_user)
+
+
+@router.get("/me/addresses", response_model=UserAddressesResponse)
+def me_addresses(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserAddressesResponse:
+    addresses = db.scalars(
+        select(UserAddress).where(UserAddress.user_id == current_user.id, UserAddress.deleted_at.is_(None)).order_by(UserAddress.created_at.asc())
+    ).all()
+    return UserAddressesResponse(data=[UserAddressRead.model_validate(address) for address in addresses])

@@ -37,6 +37,7 @@ Il backend deve supportare un contratto uniforme per login, registrazione e refr
 - `documentsUpload: "/documents/upload"` — Upload documenti (multipart/form-data)
 - `delegations: "/delegations"` — Liste/creazione deleghe
 - `invoicesSend: "/invoices/send"` — Invio fattura (email/PEC)
+- `clients: "/clients"` — Elenco clienti per autocomplete
 
 Per i path effettivi il client usa `buildUrl(ENDPOINTS.xxx, query?)`.
 
@@ -94,7 +95,7 @@ Request
 - Body (JSON) — campi comuni:
   ```json
   {
-    "accountType": "privato",
+    "accountType": "privato" | "libero_professionista" | "azienda" | "ditta_individuale" | "pubblica_amministrazione",
     "email": "string",
     "password": "string",
     "codiceFiscale": "string",
@@ -191,8 +192,80 @@ Errori da restituire
 
 ---
 
-## 4) Lista fatture — GET `/invoices`
+## 4) Clienti utente — GET `/clients`
+- Scopo: restituire l’elenco dei clienti salvati dall’utente autenticato, da usare per autocomplete e precompilazione dei campi cliente nella fattura.
+
+Request
+- Metodo: GET
+- Query params opzionali: `q`, `page`, `perPage`, `clientType`, `includeArchived`
+- Header: `Authorization: Bearer <token>`
+
+Response attesa
+- `200 OK`
+- Può essere un array oppure un wrapper paginato, coerente con gli altri endpoint lista.
+- Forma minima suggerita per ogni cliente:
+  ```json
+  {
+    "id": "CUST-1",
+    "clientType": "private",
+    "firstName": "Mario",
+    "lastName": "Rossi",
+    "companyName": "",
+    "vatNumber": "",
+    "taxCode": "RSSMRA80A01H501U",
+    "address": "Via Roma 1",
+    "city": "Roma",
+    "postalCode": "00100",
+    "province": "RM",
+    "country": "IT",
+    "pec": "",
+    "recipientCode": "0000000"
+  }
+  ```
+- Forma minima suggerita per aziende/PA:
+  ```json
+  {
+    "id": "CUST-2",
+    "clientType": "company",
+    "firstName": "",
+    "lastName": "",
+    "companyName": "Demo S.r.l.",
+    "vatNumber": "12345678901",
+    "taxCode": "01234567890",
+    "address": "Via Milano 10",
+    "city": "Milano",
+    "postalCode": "20100",
+    "province": "MI",
+    "country": "IT",
+    "pec": "demo@pec.it",
+    "recipientCode": "ABC1234"
+  }
+  ```
+- Il frontend accetta anche wrapper come:
+  - `{ "data": [...] }`
+  - `{ "items": [...] }`
+  - `{ "clients": [...] }`
+  - `{ "results": [...] }`
+
+Errori da restituire
+- `401 Unauthorized` — token mancante/scaduto/non valido
+  - esempio: `{ "message": "Unauthorized" }`
+- `403 Forbidden` — utente autenticato ma non autorizzato
+  - esempio: `{ "message": "Forbidden" }`
+- `422 Unprocessable Entity` — query non valida
+  - esempio: `{ "message": "Validation failed", "errors": { "q": ["too long"] } }`
+- `500 Internal Server Error` — errore backend generico
+
+Note di implementazione
+- L’endpoint può restituire solo i campi necessari all’autocomplete; il frontend usa `firstName`, `lastName`, `companyName`, `vatNumber`, `taxCode`, indirizzo e contatti fiscali per precompilare la fattura.
+- Per il contratto frontend è sufficiente che il backend supporti anche risultati parziali: eventuali campi mancanti possono essere vuoti.
+- In caso di assenza endpoint o database clienti ancora incompleto, il frontend usa un fallback locale per non bloccare l’esperienza utente.
+
+---
+
+## 5) Lista fatture — GET `/invoices`
 - Scopo: ottenere elenco fatture con supporto a query (paginazione, filtri).
+- Schema JSON dedicato: [`docs/invoices.get.schema.json`](./invoices.get.schema.json)
 
 Request
 - Metodo: GET
@@ -201,8 +274,7 @@ Request
 
 Response attesa
 - `200 OK`
-- Il backend può restituire un array semplice oppure un wrapper paginato.
-- Contratto di riferimento: `docs/invoices.get.schema.json`
+- Può essere un array o un wrapper paginato.
 - Esempio wrapper:
   ```json
   {
@@ -211,8 +283,7 @@ Response attesa
     ],
     "page": 1,
     "perPage": 20,
-    "total": 1,
-    "last_invoice_number": "2026-001"
+    "total": 1
   }
   ```
 
@@ -223,30 +294,23 @@ Errori da restituire
 
 ---
 
-## 5) Creazione fattura — POST `/invoices`
+## 6) Creazione fattura — POST `/invoices`
 - Scopo: creare una nuova fattura.
+- Schema JSON dedicato: [`docs/invoices.post.schema.json`](./invoices.post.schema.json)
 
 Request
 - Metodo: POST
 - Header: `Content-Type: application/json`, `Authorization: Bearer <token>`
-- Body: oggetto fattura secondo il contratto `docs/invoices.post.schema.json`
-- Campi chiave che il backend deve validare:
-  - `mode`
-  - `invoiceNumber`
-  - `issueDate`
-  - `currency`
-  - `documentType`
-  - `client`
-  - `lines`
-  - `subtotal`
-  - `vatTotal`
-  - `total`
-  - `attachments` opzionale
+- Body: oggetto fattura; lo shape esatto dipende dal dominio, ma il backend deve almeno validare:
+  - cliente
+  - data
+  - righe fattura
+  - totale
+  - allegati opzionali multipli (`attachments[]`) codificati in base64, ciascuno con nome file, mime type e dimensione
 
 Response attesa
 - `201 Created` o `200 OK`
-- Restituisce la fattura creata con `id` e dati normalizzati.
-- Il payload di risposta può essere strutturato in modo esteso purché includa almeno l’identificativo e i valori principali appena creati.
+- Restituisce la fattura creata con `id`.
 
 Errori da restituire
 - `400 Bad Request` / `422 Unprocessable Entity` — validazione fallita
@@ -255,7 +319,7 @@ Errori da restituire
 
 ---
 
-## 6) Invio fattura — POST `/invoices/send`
+## 7) Invio fattura — POST `/invoices/send`
 - Scopo: inviare una fattura via email/PEC/altro.
 
 Request
@@ -265,13 +329,11 @@ Request
   ```json
   {
     "invoiceId": "string",
-    "recipients": ["string"],
-    "method": "email",
+    "recipients": ["string"] | "string",
+    "method": "email" | "pec",
     "message": "string (opzionale)"
   }
   ```
-- `recipients` può essere gestito dal backend anche come singola stringa, ma l’esempio mantiene la forma array per restare JSON valido.
-- `method` accetta `email` o `pec`.
 
 Response attesa
 - `200 OK`
@@ -284,7 +346,7 @@ Errori da restituire
 
 ---
 
-## 7) Upload documenti — POST `/documents/upload`
+## 8) Upload documenti — POST `/documents/upload`
 - Scopo: upload file/documenti.
 
 Request
@@ -313,7 +375,7 @@ Errori da restituire
 
 ---
 
-## 8) Delegations — GET/POST `/delegations`
+## 9) Delegations — GET/POST `/delegations`
 - Scopo: gestire deleghe (elenco e creazione).
 
 Request

@@ -57,8 +57,19 @@ class UserCreate(BaseModel):
                 raise ValueError("firstName is required for this account type")
             if not self.last_name:
                 raise ValueError("lastName is required for this account type")
-        if self.account_type in {AccountType.azienda, AccountType.pubblica_amministrazione} and not self.company_name:
-            raise ValueError("companyName is required for this account type")
+        if self.account_type in {AccountType.azienda, AccountType.pubblica_amministrazione}:
+            if not self.company_name:
+                raise ValueError("companyName is required for this account type")
+            if not self.residence_country:
+                raise ValueError("residenceCountry is required for this account type")
+            if not self.residence_province:
+                raise ValueError("residenceProvince is required for this account type")
+            if not self.residence_comune:
+                raise ValueError("residenceComune is required for this account type")
+            if not self.residence_address:
+                raise ValueError("residenceAddress is required for this account type")
+            if not self.residence_postal:
+                raise ValueError("residencePostal is required for this account type")
         if not self.codice_fiscale:
             raise ValueError("codiceFiscale is required")
         return self
@@ -98,3 +109,26 @@ class UserRead(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     user: UserRead
+
+
+class UserAddressRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    user_id: UUID = Field(alias="userId")
+    account_type: AccountType = Field(alias="accountType")
+    address_label: str = Field(alias="addressLabel")
+    country: str
+    province: str | None = None
+    city: str | None = None
+    postal_code: str | None = Field(default=None, alias="postalCode")
+    address: str
+    street_number: str | None = Field(default=None, alias="streetNumber")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+
+class UserAddressesResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    data: list[UserAddressRead]
