@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import hashlib
 import re
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from uuid import UUID, uuid4
+from typing import Optional, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -17,10 +19,12 @@ from app.config.settings import get_settings
 from app.db.models.invoice import Client, Invoice, InvoiceAttachment, InvoiceLine, InvoiceVatSummary
 from app.db.models.user import User
 from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode
-from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceLinePayload
+from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceLinePayload, InvoiceRead, InvoicesListResponse
 
 TWOPLACES = Decimal("0.01")
 ZERO = Decimal("0.00")
+DEFAULT_INVOICE_LIST_LIMIT = 20
+logger = logging.getLogger("GestPro")
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,30 +60,35 @@ class InvoiceService:
 
         clients = self.db.scalars(query).all()
         data = [self._serialize_client(client) for client in clients]
-        return ClientsListResponse(data=data, items=data, clients=data, results=data)
+        logger.debug(
+            "list_clients resolved company_id=%s q=%r count=%d",
+            current_user.id,
+            q,
+            len(data),
+        )
+        return ClientsListResponse(data=data)
 
     def create_invoice(
         self,
         current_user: User,
         payload: InvoiceCreateRequest,
         invoice_form_test: str | None = None,
-    ) -> dict[str, object]:
+    ) -> InvoiceRead:
         self._ensure_user_can_issue(current_user)
         calc = self._calculate(payload)
         self._validate_calculated_totals(payload, calc)
 
         test_mode = self._is_test_mode(invoice_form_test)
+        now = datetime.now(timezone.utc) if test_mode else None
         written_files: list[Path] = []
         try:
-            client = self._create_client(current_user, payload.client)
-            if not test_mode:
-                self.db.add(client)
-                self.db.flush()
+            client = self._resolve_or_create_client(current_user, payload.client, test_mode=test_mode)
+            test_invoice_id = uuid4() if test_mode else None
 
             invoice = Invoice(
                 company_id=current_user.id,
-                customer_id=None,
-                client_id=client.id if client.id is not None else None,
+                customer_id=client.id,
+                client_id=client.id,
                 invoice_number=payload.invoice_number,
                 invoice_year=payload.issue_date.year,
                 invoice_section="",
@@ -95,31 +104,20 @@ class InvoiceService:
                 withholding_amount=ZERO,
                 stamp_duty_amount=ZERO,
                 rounding_amount=ZERO,
-                supplier_name=self._supplier_name(current_user),
-                supplier_vat_number=self._supplier_vat_number(current_user),
-                supplier_tax_code=self._supplier_tax_code(current_user),
-                supplier_address=self._supplier_address(),
-                supplier_city=self._supplier_city(),
-                supplier_postal_code=self._supplier_postal_code(),
-                supplier_province=self._supplier_province(),
-                supplier_country=self._supplier_country(),
             )
             if test_mode:
-                now = datetime.now(timezone.utc)
-                invoice.id = uuid4()
+                invoice.id = cast(UUID, test_invoice_id)
                 invoice.created_at = now
                 invoice.updated_at = now
-                client.id = uuid4()
-                client.created_at = now
-                client.updated_at = now
             else:
                 self.db.add(invoice)
                 self.db.flush()
 
-            lines = [self._create_line(invoice.id, line) for line in payload.lines]
+            invoice_uuid = cast(UUID, cast(object, invoice.id))
+            lines = [self._create_line(invoice_uuid, line) for line in payload.lines]
             vat_summaries = [
                 InvoiceVatSummary(
-                    invoice_id=invoice.id,
+                    invoice_id=invoice_uuid,
                     vat_rate=vat_rate,
                     vat_nature=nature,
                     taxable_amount=taxable_amount,
@@ -127,7 +125,7 @@ class InvoiceService:
                 )
                 for vat_rate, nature, taxable_amount, vat_amount in calc.vat_groups
             ]
-            attachments = self._create_attachments(invoice.id, payload.attachments, written_files)
+            attachments = self._create_attachments(invoice_uuid, payload.attachments, written_files)
 
             if not test_mode:
                 self.db.add_all(lines)
@@ -145,7 +143,7 @@ class InvoiceService:
             else:
                 self._cleanup_files(written_files)
 
-            return self._serialize_invoice(invoice, client, lines, vat_summaries, attachments)
+            return InvoiceRead.model_validate(self._serialize_invoice(invoice, client, lines, vat_summaries, attachments))
         except HTTPException:
             self.db.rollback()
             self._cleanup_files(written_files)
@@ -155,8 +153,10 @@ class InvoiceService:
             self._cleanup_files(written_files)
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"message": str(exc)}) from exc
 
-    def list_invoices(self, current_user: User, page: int | None = None, per_page: int | None = None) -> dict[str, object]:
+    def list_invoices(self, current_user: User, page: int | None = None, per_page: int | None = None) -> InvoicesListResponse:
         self._ensure_user_can_issue(current_user)
+        page = page or 1
+        per_page = per_page or DEFAULT_INVOICE_LIST_LIMIT
         query = (
             select(Invoice)
             .where(Invoice.company_id == current_user.id, Invoice.deleted_at.is_(None))
@@ -165,8 +165,7 @@ class InvoiceService:
 
         total = self.db.scalar(select(func.count()).select_from(Invoice).where(Invoice.company_id == current_user.id, Invoice.deleted_at.is_(None))) or 0
 
-        if page is not None and per_page is not None:
-            query = query.offset((page - 1) * per_page).limit(per_page)
+        query = query.offset((page - 1) * per_page).limit(per_page)
 
         invoices = self.db.scalars(query).all()
         last_invoice_number = self.db.scalar(
@@ -178,22 +177,23 @@ class InvoiceService:
 
         data: list[dict[str, object]] = []
         for invoice in invoices:
-            client = self.db.get(Client, invoice.client_id) if invoice.client_id else None
-            lines = self.db.scalars(select(InvoiceLine).where(InvoiceLine.invoice_id == invoice.id).order_by(InvoiceLine.line_number.asc())).all()
-            summaries = self.db.scalars(select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice.id).order_by(InvoiceVatSummary.vat_rate.asc())).all()
-            attachments = self.db.scalars(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id).order_by(InvoiceAttachment.created_at.asc())).all()
+            client_ref = invoice.customer_id or invoice.client_id
+            client = cast(Optional[Client], self.db.get(Client, client_ref) if client_ref else None)
+            lines = list(self.db.scalars(select(InvoiceLine).where(InvoiceLine.invoice_id == invoice.id).order_by(InvoiceLine.line_number.asc())).all())
+            summaries = list(self.db.scalars(select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice.id).order_by(InvoiceVatSummary.vat_rate.asc())).all())
+            attachments = list(self.db.scalars(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id).order_by(InvoiceAttachment.created_at.asc())).all())
             if client is None:
                 continue
             data.append(self._serialize_invoice(invoice, client, lines, summaries, attachments))
 
-        return {
+        return InvoicesListResponse.model_validate({
             "data": data,
             "lastInvoiceNumber": last_invoice_number,
             "page": page,
             "perPage": per_page,
             "total": int(total),
             "count": len(data),
-        }
+        })
 
     def _is_test_mode(self, invoice_form_test: str | None) -> bool:
         return isinstance(invoice_form_test, str) and invoice_form_test.lower() == "true"
@@ -238,27 +238,125 @@ class InvoiceService:
         if payload.total.quantize(TWOPLACES, rounding=ROUND_HALF_UP) != calc.total:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"message": "total does not match invoice lines"})
 
-    def _create_client(self, current_user: User, payload: InvoiceClientPayload) -> Client:
-        client_type = {
+    def _resolve_or_create_client(self, current_user: User, payload: InvoiceClientPayload, test_mode: bool) -> Client:
+        existing = self._find_existing_client(current_user, payload)
+        if existing is not None:
+            return existing
+
+        client = self._create_client(current_user, payload)
+        if test_mode:
+            now = datetime.now(timezone.utc)
+            client.id = uuid4()
+            client.created_at = now
+            client.updated_at = now
+            return client
+
+        self.db.add(client)
+        self.db.flush()
+        return client
+
+    def _find_existing_client(self, current_user: User, payload: InvoiceClientPayload) -> Client | None:
+        client_type = self._client_type_from_payload(payload)
+        lookup_clauses = {
+            ClientType.PRIVATE: [Client.tax_code == self._normalize_text(payload.tax_code, upper=True)],
+            ClientType.COMPANY: [Client.vat_number == self._normalize_text(payload.vat_number, upper=True)],
+            ClientType.PUBLIC_ADMINISTRATION: [
+                Client.tax_code == self._normalize_text(payload.tax_code, upper=True),
+                Client.recipient_code == self._normalize_text(payload.recipient_code or "0000000", upper=True),
+            ],
+        }[client_type]
+
+        query = select(Client).where(
+            Client.company_id == current_user.id,
+            Client.deleted_at.is_(None),
+            Client.client_type == client_type,
+            *lookup_clauses,
+        )
+
+        client = self.db.scalars(query).first()
+        if client is not None and self._client_matches_payload(client, payload):
+            return client
+
+        candidates = self.db.scalars(
+            select(Client).where(
+                Client.company_id == current_user.id,
+                Client.deleted_at.is_(None),
+                Client.client_type == client_type,
+            )
+        ).all()
+
+        for client in candidates:
+            if self._client_matches_payload(client, payload):
+                return client
+        return None
+
+    def _client_matches_payload(self, client: Client, payload: InvoiceClientPayload) -> bool:
+        if client.client_type != self._client_type_from_payload(payload):
+            return False
+
+        checks: list[tuple[str | None, str | None, bool]] = []
+        if payload.first_name:
+            checks.append((client.first_name, payload.first_name, False))
+        if payload.last_name:
+            checks.append((client.last_name, payload.last_name, False))
+        if payload.company_name:
+            checks.append((client.company_name, payload.company_name, False))
+        if payload.vat_number:
+            checks.append((client.vat_number, payload.vat_number, True))
+        if payload.tax_code:
+            checks.append((client.tax_code, payload.tax_code, True))
+        if payload.address:
+            checks.append((client.address, payload.address, False))
+        if payload.city:
+            checks.append((client.city, payload.city, False))
+        if payload.postal_code:
+            checks.append((client.postal_code, payload.postal_code, False))
+        if payload.province:
+            checks.append((client.province, payload.province, False))
+        if payload.country:
+            checks.append((client.country, payload.country, True))
+        if payload.pec:
+            checks.append((client.pec, payload.pec, False))
+        if payload.recipient_code:
+            checks.append((client.recipient_code, payload.recipient_code, True))
+
+        return all(
+            self._normalize_text(stored, upper=upper) == self._normalize_text(incoming, upper=upper)
+            for stored, incoming, upper in checks
+        )
+
+    @staticmethod
+    def _normalize_text(value: str | None, *, upper: bool = False) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        return cleaned.upper() if upper else cleaned
+
+    @staticmethod
+    def _client_type_from_payload(payload: InvoiceClientPayload) -> ClientType:
+        return {
             "private": ClientType.PRIVATE,
             "company": ClientType.COMPANY,
             "public_administration": ClientType.PUBLIC_ADMINISTRATION,
         }[payload.client_type.value]
 
+    def _create_client(self, current_user: User, payload: InvoiceClientPayload) -> Client:
         return Client(
             company_id=current_user.id,
-            client_type=client_type,
-            first_name=payload.first_name,
-            last_name=payload.last_name,
-            company_name=payload.company_name,
-            vat_number=payload.vat_number,
-            tax_code=payload.tax_code,
+            client_type=self._client_type_from_payload(payload),
+            first_name=payload.first_name or None,
+            last_name=payload.last_name or None,
+            company_name=payload.company_name or None,
+            vat_number=payload.vat_number or None,
+            tax_code=payload.tax_code or None,
             address=payload.address,
-            city=payload.city,
-            postal_code=payload.postal_code,
-            province=payload.province,
+            city=payload.city or None,
+            postal_code=payload.postal_code or None,
+            province=payload.province or None,
             country=payload.country,
-            pec=payload.pec,
+            pec=payload.pec or None,
             recipient_code=payload.recipient_code or "0000000",
         )
 
@@ -347,37 +445,7 @@ class InvoiceService:
             except OSError:
                 continue
 
-    def _supplier_name(self, current_user: User) -> str:
-        if current_user.company_name:
-            return current_user.company_name
-        full_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part)
-        return full_name or current_user.email
 
-    def _supplier_vat_number(self, current_user: User) -> str:
-        return current_user.partita_iva or current_user.codice_fiscale or ""
-
-    def _supplier_tax_code(self, current_user: User) -> str | None:
-        return current_user.codice_fiscale or current_user.partita_iva
-
-    @staticmethod
-    def _supplier_address() -> str:
-        return ""
-
-    @staticmethod
-    def _supplier_city() -> str:
-        return ""
-
-    @staticmethod
-    def _supplier_postal_code() -> str:
-        return ""
-
-    @staticmethod
-    def _supplier_province() -> str | None:
-        return None
-
-    @staticmethod
-    def _supplier_country() -> str:
-        return "IT"
 
     def _serialize_invoice(
         self,
@@ -390,7 +458,7 @@ class InvoiceService:
         return {
             "id": str(invoice.id),
             "companyId": str(invoice.company_id),
-            "clientId": str(invoice.client_id) if invoice.client_id else None,
+            "clientId": str(invoice.customer_id or invoice.client_id) if (invoice.customer_id or invoice.client_id) else None,
             "invoiceNumber": invoice.invoice_number,
             "invoiceYear": invoice.invoice_year,
             "invoiceSection": invoice.invoice_section or None,

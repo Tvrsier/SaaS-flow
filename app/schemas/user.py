@@ -21,7 +21,7 @@ class UserCreate(BaseModel):
     account_type: AccountType = Field(alias="accountType")
     email: EmailStr
     password: str
-    codice_fiscale: str = Field(alias="codiceFiscale")
+    codice_fiscale: str | None = Field(default=None, alias="codiceFiscale")
     partita_iva: str | None = Field(default=None, alias="partitaIva")
     phone: str | None = None
     mobile: str | None = None
@@ -35,10 +35,10 @@ class UserCreate(BaseModel):
 
     company_name: str | None = Field(default=None, alias="companyName")
 
+    legal_address: str | None = Field(default=None, alias="legalAddress")
     residence_country: str | None = Field(default=None, alias="residenceCountry")
     residence_province: str | None = Field(default=None, alias="residenceProvince")
     residence_comune: str | None = Field(default=None, alias="residenceComune")
-    residence_address: str | None = Field(default=None, alias="residenceAddress")
     residence_postal: str | None = Field(default=None, alias="residencePostal")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -57,21 +57,23 @@ class UserCreate(BaseModel):
                 raise ValueError("firstName is required for this account type")
             if not self.last_name:
                 raise ValueError("lastName is required for this account type")
+            if not self.codice_fiscale:
+                raise ValueError("codiceFiscale is required for this account type")
         if self.account_type in {AccountType.azienda, AccountType.pubblica_amministrazione}:
             if not self.company_name:
                 raise ValueError("companyName is required for this account type")
+            if not self.legal_address:
+                raise ValueError("legalAddress is required for this account type")
             if not self.residence_country:
                 raise ValueError("residenceCountry is required for this account type")
             if not self.residence_province:
                 raise ValueError("residenceProvince is required for this account type")
             if not self.residence_comune:
                 raise ValueError("residenceComune is required for this account type")
-            if not self.residence_address:
-                raise ValueError("residenceAddress is required for this account type")
             if not self.residence_postal:
                 raise ValueError("residencePostal is required for this account type")
-        if not self.codice_fiscale:
-            raise ValueError("codiceFiscale is required")
+            if not self.partita_iva:
+                raise ValueError("partitaIva is required for this account type")
         return self
 
 

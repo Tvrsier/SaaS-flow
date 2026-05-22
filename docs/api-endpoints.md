@@ -95,13 +95,12 @@ Request
 - Body (JSON) — campi comuni:
   ```json
   {
-    "accountType": "privato" | "libero_professionista" | "azienda" | "ditta_individuale" | "pubblica_amministrazione",
+    "accountType": "privato, libero_professionista, azienda, ditta_individuale oppure pubblica_amministrazione",
     "email": "string",
     "password": "string",
-    "codiceFiscale": "string",
-    "partitaIva": "string | null",
-    "phone": "string | null",
-    "mobile": "string | null"
+    "partitaIva": "string o null",
+    "phone": "string o null",
+    "mobile": "string o null"
   }
   ```
 - Campi aggiuntivi per persone fisiche (`privato`, `ditta_individuale`, `libero_professionista`):
@@ -109,6 +108,7 @@ Request
   {
     "firstName": "string",
     "lastName": "string",
+    "codiceFiscale": "string",
     "nationality": "string",
     "birthDate": "YYYY-MM-DD",
     "birthProvince": "string",
@@ -119,13 +119,14 @@ Request
   ```json
   {
     "companyName": "string",
+    "legalAddress": "string",
     "residenceCountry": "string",
     "residenceProvince": "string",
     "residenceComune": "string",
-    "residenceAddress": "string",
     "residencePostal": "string"
   }
   ```
+- Nota: per aziende/PA il campo `codiceFiscale` non è richiesto dal frontend; la P.IVA è obbligatoria. L’indirizzo aziendale va inteso come **sede legale**.
 
 Response attesa
 - Successo: `201 Created` o `200 OK`
@@ -154,8 +155,8 @@ Errori da restituire
   - esempio: `{ "message": "Invalid payload", "errors": { "email": ["required"] } }`
 - `409 Conflict` — email già registrata / account duplicato
   - esempio: `{ "message": "Email already in use" }`
-- `422 Unprocessable Entity` — validazione business (CF/P.IVA/campi specifici)
-  - esempio: `{ "message": "Validation failed", "errors": { "codiceFiscale": ["format invalid"] } }`
+- `422 Unprocessable Entity` — validazione business (P.IVA/campi specifici)
+  - esempio: `{ "message": "Validation failed", "errors": { "partitaIva": ["format invalid"] } }`
 - `500 Internal Server Error` — errore backend generico
 
 ---
@@ -188,6 +189,44 @@ Errori da restituire
   - esempio: `{ "message": "Unauthorized" }`
 - `403 Forbidden` — token valido ma non autorizzato per la risorsa
   - esempio: `{ "message": "Forbidden" }`
+- `500 Internal Server Error` — errore backend generico
+
+---
+
+## 3b) Indirizzi utente — GET `/auth/me/addresses`
+- Scopo: restituire gli indirizzi associati all’utente autenticato, salvati nella tabella separata `user_addresses`.
+
+Request
+- Metodo: GET
+- Header: `Authorization: Bearer <token>`
+
+Response attesa
+- `200 OK`
+- Body JSON suggerito:
+  ```json
+  {
+    "data": [
+      {
+        "id": "UUID",
+        "userId": "UUID",
+        "accountType": "azienda",
+        "addressLabel": "primary",
+        "country": "IT",
+        "province": "MI",
+        "city": "Milano",
+        "postalCode": "20100",
+        "address": "Via Roma 1",
+        "streetNumber": null,
+        "createdAt": "2026-05-21T10:00:00Z",
+        "updatedAt": "2026-05-21T10:00:00Z"
+      }
+    ]
+  }
+  ```
+
+Errori da restituire
+- `401 Unauthorized` — token mancante/scaduto/non valido
+- `403 Forbidden` — utente autenticato ma non autorizzato
 - `500 Internal Server Error` — errore backend generico
 
 ---
@@ -329,8 +368,8 @@ Request
   ```json
   {
     "invoiceId": "string",
-    "recipients": ["string"] | "string",
-    "method": "email" | "pec",
+    "recipients": "array di stringhe oppure stringa singola",
+    "method": "email oppure pec",
     "message": "string (opzionale)"
   }
   ```

@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import datetime, date
 from decimal import Decimal
 from uuid import UUID, uuid4
+from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.models.user import User
 from app.modules.invoices.domain.enums import ClientType, DocumentType, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
 
 
@@ -63,8 +65,8 @@ class Client(Base, UUIDTimestampMixin):
     recipient_code: Mapped[str | None] = mapped_column(String(7), nullable=True, default="0000000", server_default=text("'0000000'"))
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    company: Mapped["User"] = relationship(back_populates="clients")
-    invoices: Mapped[list["Invoice"]] = relationship(back_populates="client")
+    company: Mapped[User] = relationship("User", back_populates="clients")
+    invoices: Mapped[list["Invoice"]] = relationship(back_populates="client", foreign_keys="Invoice.client_id")
 
 
 class Invoice(Base, UUIDTimestampMixin):
@@ -84,29 +86,10 @@ class Invoice(Base, UUIDTimestampMixin):
     )
 
     company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    customer_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    customer_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True)
     client_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True)
-    client: Mapped[Client | None] = relationship(back_populates="invoices")
+    client: Mapped[Client | None] = relationship(back_populates="invoices", foreign_keys=[client_id])
 
-    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    customer_vat_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    customer_tax_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    customer_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    customer_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    customer_postal_code: Mapped[str | None] = mapped_column(String(12), nullable=True)
-    customer_province: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    customer_country: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    customer_pec: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    customer_recipient_code: Mapped[str | None] = mapped_column(String(7), nullable=True)
-
-    supplier_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    supplier_vat_number: Mapped[str] = mapped_column(String(32), nullable=False)
-    supplier_tax_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    supplier_address: Mapped[str] = mapped_column(String(255), nullable=False)
-    supplier_city: Mapped[str] = mapped_column(String(120), nullable=False)
-    supplier_postal_code: Mapped[str] = mapped_column(String(12), nullable=False)
-    supplier_province: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    supplier_country: Mapped[str] = mapped_column(String(2), nullable=False)
 
     invoice_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     invoice_year: Mapped[int] = mapped_column(Integer, nullable=False)

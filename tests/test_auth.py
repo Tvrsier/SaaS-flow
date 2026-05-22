@@ -366,15 +366,15 @@ def test_register_company_persists_user_address(client: TestClient, db_session: 
             "accountType": "azienda",
             "email": "azienda@example.com",
             "password": "whatever123",
-            "codiceFiscale": "01234567890",
+            "codiceFiscale": None,
             "partitaIva": "01234567890",
             "phone": None,
             "mobile": None,
             "companyName": "Atlas SRL",
+            "legalAddress": "Via Roma 1",
             "residenceCountry": "IT",
             "residenceProvince": "MI",
             "residenceComune": "Milano",
-            "residenceAddress": "Via Roma 1",
             "residencePostal": "20100",
             "firstName": None,
             "lastName": None,
@@ -389,7 +389,6 @@ def test_register_company_persists_user_address(client: TestClient, db_session: 
     body = response.json()
     assert body["user"]["email"] == "azienda@example.com"
 
-    # verifica che il record user sia presente e che la relazione indirizzo sia stata inserita
     from app.db.models.user import User, UserAddress
     from sqlalchemy import select
 
@@ -436,15 +435,15 @@ def test_me_addresses_returns_saved_user_addresses(client: TestClient, db_sessio
             "accountType": "azienda",
             "email": "azienda-address@example.com",
             "password": "whatever123",
-            "codiceFiscale": "01234567890",
+            "codiceFiscale": None,
             "partitaIva": "01234567890",
             "phone": None,
             "mobile": None,
             "companyName": "Atlas SRL",
+            "legalAddress": "Via Roma 1",
             "residenceCountry": "IT",
             "residenceProvince": "MI",
             "residenceComune": "Milano",
-            "residenceAddress": "Via Roma 1",
             "residencePostal": "20100",
             "firstName": None,
             "lastName": None,
@@ -468,4 +467,3 @@ def test_me_addresses_returns_saved_user_addresses(client: TestClient, db_sessio
     body = response.json()
     assert len(body["data"]) == 1
     assert body["data"][0]["address"] == "Via Roma 1"
-

@@ -151,7 +151,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
                     province=payload.residence_province,
                     city=payload.residence_comune,
                     postal_code=payload.residence_postal,
-                    address=payload.residence_address or "",
+                    address=payload.legal_address or "",
                     street_number=None,
                 )
             )

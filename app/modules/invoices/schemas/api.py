@@ -271,7 +271,7 @@ class InvoicesListResponse(BaseModel):
 
 
 class ClientRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True, serialize_by_alias=True)
 
     id: str
     client_type: InvoiceClientType = Field(alias="clientType")
@@ -292,9 +292,6 @@ class ClientRead(BaseModel):
 
 
 class ClientsListResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     data: list[ClientRead]
-    items: list[ClientRead] | None = None
-    clients: list[ClientRead] | None = None
-    results: list[ClientRead] | None = None

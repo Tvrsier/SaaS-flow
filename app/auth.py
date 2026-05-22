@@ -55,6 +55,8 @@ def decode_access_token(token: str) -> dict[str, Any]:
         logger.warning("User token is expired")
     except jwt.InvalidSignatureError:
         logger.warning("User token is invalid")
+    except jwt.exceptions.DecodeError:
+        logger.warning("User token is invalid")
     except Exception:
         logger.exception("JWT decode failed")
         raise
