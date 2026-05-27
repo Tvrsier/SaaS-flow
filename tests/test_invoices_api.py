@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 from app.auth import create_access_token  # noqa: E402
 from app.config.settings import get_settings  # noqa: E402
-from app.db.models.invoice import Client, Invoice  # noqa: E402
+from app.db.models.invoice import Client, Invoice, InvoicePayment  # noqa: E402
 from app.db.models.user import AccountType, User  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
@@ -30,13 +30,13 @@ def db_session() -> Generator[Session, None, None]:
     connection = engine.connect()
     db = TestingSessionLocal(bind=connection)
     transaction = connection.begin()
-    nested_transaction = db.begin_nested()
+    db.begin_nested()
 
     @event.listens_for(db, "after_transaction_end")
     def _restart_savepoint(session: Session, trans) -> None:
-        nonlocal nested_transaction
-        if trans.nested and not trans._parent.nested:
-            nested_transaction = session.begin_nested()
+        parent = getattr(trans, "parent", None)
+        if trans.nested and (parent is None or not parent.nested):
+            session.begin_nested()
 
     try:
         yield db
@@ -202,6 +202,7 @@ def invoice_payload() -> dict[str, object]:
         "issueDate": "2026-05-15",
         "currency": "EUR",
         "documentType": "TD01",
+        "paymentMethod": "MP05",
         "client": {
             "clientType": "company",
             "companyName": "Demo S.r.l.",
@@ -231,7 +232,15 @@ def invoice_payload() -> dict[str, object]:
     }
 
 
-def test_create_invoice_persists_invoice_client_lines(client: TestClient, auth_headers: dict[str, str], db_session: Session, invoice_payload: dict[str, object]):
+def test_create_invoice_persists_invoice_client_lines(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+    invoice_payload: dict[str, object],
+    company_user: User,
+):
+    payments_before = len(db_session.scalars(select(InvoicePayment)).all())
+
     response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
 
     assert response.status_code == 201
@@ -243,10 +252,18 @@ def test_create_invoice_persists_invoice_client_lines(client: TestClient, auth_h
     assert body["lines"][0]["numberLine"] == 1
     assert body["vatSummary"][0]["vatRate"] in ("22.00", 22, 22.0)
 
-    invoice = db_session.scalar(select(Invoice).where(Invoice.invoice_number == "2026-001"))
+    invoice = db_session.scalar(
+        select(Invoice).where(
+            Invoice.invoice_number == "2026-001",
+            Invoice.company_id == company_user.id,
+        )
+    )
     assert invoice is not None
     assert invoice.customer_id is not None
     assert invoice.client_id == invoice.customer_id
+
+    payments_after = len(db_session.scalars(select(InvoicePayment)).all())
+    assert payments_after == payments_before + 1
 
     client_row = db_session.get(Client, invoice.customer_id)
     assert client_row is not None
@@ -282,15 +299,17 @@ def test_create_invoice_reuses_existing_customer_and_persists_customer_id(
 
     invoice_payload = dict(invoice_payload)
     invoice_payload["invoiceNumber"] = "2026-REUSE-001"
-    invoice_payload["client"] = dict(invoice_payload["client"])
-    invoice_payload["client"]["companyName"] = "Reusable Demo S.r.l."
-    invoice_payload["client"]["vatNumber"] = "10987654321"
-    invoice_payload["client"]["taxCode"] = "10987654321"
-    invoice_payload["client"]["address"] = "Via Reuse 1"
-    invoice_payload["client"]["city"] = "Bologna"
-    invoice_payload["client"]["postalCode"] = "40100"
-    invoice_payload["client"]["province"] = "MI"
-    invoice_payload["client"]["pec"] = "reusable@pec.it"
+    client_payload = cast(dict[str, object], invoice_payload["client"])
+    invoice_payload["client"] = dict(client_payload)
+    client_payload = cast(dict[str, object], invoice_payload["client"])
+    client_payload["companyName"] = "Reusable Demo S.r.l."
+    client_payload["vatNumber"] = "10987654321"
+    client_payload["taxCode"] = "10987654321"
+    client_payload["address"] = "Via Reuse 1"
+    client_payload["city"] = "Bologna"
+    client_payload["postalCode"] = "40100"
+    client_payload["province"] = "MI"
+    client_payload["pec"] = "reusable@pec.it"
 
     response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
 

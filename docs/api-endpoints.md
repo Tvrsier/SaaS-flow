@@ -304,7 +304,7 @@ Note di implementazione
 
 ## 5) Lista fatture — GET `/invoices`
 - Scopo: ottenere elenco fatture con supporto a query (paginazione, filtri).
-- Schema JSON dedicato: [`docs/invoices.get.schema.json`](./invoices.get.schema.json)
+- Schema JSON dedicato: `docs/invoices.get.schema.json`
 
 Request
 - Metodo: GET
@@ -335,7 +335,7 @@ Errori da restituire
 
 ## 6) Creazione fattura — POST `/invoices`
 - Scopo: creare una nuova fattura.
-- Schema JSON dedicato: [`docs/invoices.post.schema.json`](./invoices.post.schema.json)
+- Schema JSON dedicato: `docs/invoices.post.schema.json`
 
 Request
 - Metodo: POST
@@ -344,6 +344,7 @@ Request
   - cliente
   - data
   - righe fattura
+  - metodo di pagamento
   - totale
   - allegati opzionali multipli (`attachments[]`) codificati in base64, ciascuno con nome file, mime type e dimensione
 

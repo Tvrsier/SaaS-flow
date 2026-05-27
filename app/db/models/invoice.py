@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, date
 from decimal import Decimal
 from uuid import UUID, uuid4
-from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -90,7 +89,6 @@ class Invoice(Base, UUIDTimestampMixin):
     client_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True)
     client: Mapped[Client | None] = relationship(back_populates="invoices", foreign_keys=[client_id])
 
-
     invoice_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     invoice_year: Mapped[int] = mapped_column(Integer, nullable=False)
     invoice_section: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -122,6 +120,7 @@ class Invoice(Base, UUIDTimestampMixin):
 
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payments: Mapped[list["InvoicePayment"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
 
 
 class InvoiceLine(Base, UUIDTimestampMixin):
@@ -194,6 +193,7 @@ class InvoicePayment(Base, UUIDTimestampMixin):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    invoice: Mapped[Invoice] = relationship(back_populates="payments")
 
 
 class InvoiceAttachment(Base, UUIDTimestampMixin):
@@ -229,3 +229,4 @@ __all__ = [
     "InvoicePayment",
     "InvoiceAttachment",
 ]
+

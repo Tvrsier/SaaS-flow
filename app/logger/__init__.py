@@ -55,9 +55,9 @@ formatter = SmartClassFormatter(fmt)
 logger = logging.getLogger("GestPro")
 
 
-def _build_handlers() -> list[logging.Handler]:
+def _build_handlers(retention_days: int = 5) -> list[logging.Handler]:
     file_handler = logging.handlers.TimedRotatingFileHandler(
-        LOG_FILE, when="midnight", interval=1, backupCount=5, encoding="utf-8"
+        LOG_FILE, when="midnight", interval=1, backupCount=max(int(retention_days), 0), encoding="utf-8"
     )
     console_handler = logging.StreamHandler()
     for handler in (file_handler, console_handler):
@@ -66,13 +66,13 @@ def _build_handlers() -> list[logging.Handler]:
     return [file_handler, console_handler]
 
 
-def configure_logging(level: Optional[object] = None) -> None:
+def configure_logging(level: Optional[object] = None, retention_days: int = 5) -> None:
     log_level = level if level is not None else os.getenv("LOG_LEVEL", "DEBUG").upper()
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.setLevel(log_level)
 
-    for handler in _build_handlers():
+    for handler in _build_handlers(retention_days=retention_days):
         root_logger.addHandler(handler)
 
     logger.handlers.clear()

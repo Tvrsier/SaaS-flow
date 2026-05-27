@@ -7,7 +7,7 @@ from enum import Enum, IntEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.modules.invoices.domain.enums import DocumentType, NatureCode
+from app.modules.invoices.domain.enums import DocumentType, NatureCode, PaymentMethod
 
 TWOPLACES = Decimal("0.01")
 
@@ -143,6 +143,7 @@ class InvoiceCreateRequest(BaseModel):
     issue_date: date = Field(..., alias="issueDate")
     currency: InvoiceCurrency
     document_type: DocumentType = Field(..., alias="documentType")
+    payment_method: PaymentMethod = Field(..., alias="paymentMethod")
     client: InvoiceClientPayload
     lines: list[InvoiceLinePayload] = Field(..., min_length=1)
     subtotal: Decimal = Field(..., ge=Decimal("0"))

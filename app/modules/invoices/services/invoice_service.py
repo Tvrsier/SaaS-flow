@@ -16,9 +16,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.db.models.invoice import Client, Invoice, InvoiceAttachment, InvoiceLine, InvoiceVatSummary
+from app.db.models.invoice import Client, Invoice, InvoiceAttachment, InvoiceLine, InvoicePayment, InvoiceVatSummary
 from app.db.models.user import User
-from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode
+from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
 from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceLinePayload, InvoiceRead, InvoicesListResponse
 
 TWOPLACES = Decimal("0.01")
@@ -125,11 +125,13 @@ class InvoiceService:
                 )
                 for vat_rate, nature, taxable_amount, vat_amount in calc.vat_groups
             ]
+            payments = [self._create_payment(invoice_uuid, payload.payment_method, calc.total, payload.issue_date)]
             attachments = self._create_attachments(invoice_uuid, payload.attachments, written_files)
 
             if not test_mode:
                 self.db.add_all(lines)
                 self.db.add_all(vat_summaries)
+                self.db.add_all(payments)
                 self.db.add_all(attachments)
                 self.db.commit()
                 self.db.refresh(invoice)
@@ -138,6 +140,8 @@ class InvoiceService:
                     self.db.refresh(line)
                 for summary in vat_summaries:
                     self.db.refresh(summary)
+                for payment in payments:
+                    self.db.refresh(payment)
                 for attachment in attachments:
                     self.db.refresh(attachment)
             else:
@@ -379,6 +383,19 @@ class InvoiceService:
             unit_of_measure=payload.unit_measure,
         )
 
+    def _create_payment(self, invoice_id: UUID, payment_method: PaymentMethod, amount: Decimal, due_date) -> InvoicePayment:
+        return InvoicePayment(
+            invoice_id=invoice_id,
+            payment_method=payment_method,
+            payment_status=PaymentStatus.PENDING,
+            due_date=due_date,
+            amount=amount.quantize(TWOPLACES, rounding=ROUND_HALF_UP),
+            paid_amount=ZERO,
+            paid_at=None,
+            iban=None,
+            reference=None,
+        )
+
     def _create_attachments(
         self,
         invoice_id: UUID,
@@ -444,8 +461,6 @@ class InvoiceService:
                 path.unlink(missing_ok=True)
             except OSError:
                 continue
-
-
 
     def _serialize_invoice(
         self,
