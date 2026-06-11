@@ -99,8 +99,8 @@ Request
     "email": "string",
     "password": "string",
     "partitaIva": "string o null",
-    "phone": "string o null",
-    "mobile": "string o null"
+    "phone": "string o null (opzionale)",
+    "mobile": "string o null (opzionale)"
   }
   ```
 - Campi aggiuntivi per persone fisiche (`privato`, `ditta_individuale`, `libero_professionista`):
@@ -120,13 +120,14 @@ Request
   {
     "companyName": "string",
     "legalAddress": "string",
+    "pec": "string",
     "residenceCountry": "string",
     "residenceProvince": "string",
     "residenceComune": "string",
     "residencePostal": "string"
   }
   ```
-- Nota: per aziende/PA il campo `codiceFiscale` non è richiesto dal frontend; la P.IVA è obbligatoria. L’indirizzo aziendale va inteso come **sede legale**.
+- Nota: per aziende/PA il campo `codiceFiscale` non è richiesto dal frontend; la P.IVA è obbligatoria. L’indirizzo aziendale va inteso come **sede legale** e la PEC è obbligatoria.
 
 Response attesa
 - Successo: `201 Created` o `200 OK`
@@ -189,44 +190,6 @@ Errori da restituire
   - esempio: `{ "message": "Unauthorized" }`
 - `403 Forbidden` — token valido ma non autorizzato per la risorsa
   - esempio: `{ "message": "Forbidden" }`
-- `500 Internal Server Error` — errore backend generico
-
----
-
-## 3b) Indirizzi utente — GET `/auth/me/addresses`
-- Scopo: restituire gli indirizzi associati all’utente autenticato, salvati nella tabella separata `user_addresses`.
-
-Request
-- Metodo: GET
-- Header: `Authorization: Bearer <token>`
-
-Response attesa
-- `200 OK`
-- Body JSON suggerito:
-  ```json
-  {
-    "data": [
-      {
-        "id": "UUID",
-        "userId": "UUID",
-        "accountType": "azienda",
-        "addressLabel": "primary",
-        "country": "IT",
-        "province": "MI",
-        "city": "Milano",
-        "postalCode": "20100",
-        "address": "Via Roma 1",
-        "streetNumber": null,
-        "createdAt": "2026-05-21T10:00:00Z",
-        "updatedAt": "2026-05-21T10:00:00Z"
-      }
-    ]
-  }
-  ```
-
-Errori da restituire
-- `401 Unauthorized` — token mancante/scaduto/non valido
-- `403 Forbidden` — utente autenticato ma non autorizzato
 - `500 Internal Server Error` — errore backend generico
 
 ---
@@ -304,7 +267,7 @@ Note di implementazione
 
 ## 5) Lista fatture — GET `/invoices`
 - Scopo: ottenere elenco fatture con supporto a query (paginazione, filtri).
-- Schema JSON dedicato: `docs/invoices.get.schema.json`
+- Schema JSON dedicato: `docs/invoices.get.schema.json` (da aggiungere se necessario)
 
 Request
 - Metodo: GET
@@ -335,7 +298,7 @@ Errori da restituire
 
 ## 6) Creazione fattura — POST `/invoices`
 - Scopo: creare una nuova fattura.
-- Schema JSON dedicato: `docs/invoices.post.schema.json`
+- Schema JSON dedicato: [`docs/invoices.post.schema.json`](./invoices.post.schema.json)
 
 Request
 - Metodo: POST
@@ -343,10 +306,59 @@ Request
 - Body: oggetto fattura; lo shape esatto dipende dal dominio, ma il backend deve almeno validare:
   - cliente
   - data
+  - metodo di pagamento (`paymentMethod`, obbligatorio, uno tra `MP01`...`MP23`)
   - righe fattura
-  - metodo di pagamento
   - totale
-  - allegati opzionali multipli (`attachments[]`) codificati in base64, ciascuno con nome file, mime type e dimensione
+  - allegati opzionali multipli (`attachments[]`) codificati in base64, ciascuno con nome file, mime type, dimensione e descrizione opzionale
+  - documenti opzionali (`documents[]`) con shape ibrida:
+    - `file` opzionale: allegato base64 da inserire nel blocco `<Allegati>`
+    - `relatedDocumentType` opzionale: tipo documento SDI da mappare nel blocco corretto
+    - `idDocumento` obbligatorio se è presente `relatedDocumentType`
+    - altri campi SDI: `riferimentoNumeroLinea`, `data`, `numItem`, `codiceCommessaConvenzione`, `codiceCUP`, `codiceCIG`
+
+Esempio sintetico:
+```json
+{
+  "attachments": [
+    {
+      "fileName": "contratto.pdf",
+      "mimeType": "application/pdf",
+      "contentBase64": "JVBERi0xLjcK...",
+      "size": 12345,
+      "description": "Contratto firmato"
+    }
+  ],
+  "documents": [
+    {
+      "relatedDocumentType": "DatiOrdineAcquisto",
+      "idDocumento": "PO-123",
+      "riferimentoNumeroLinea": [1, 2],
+      "data": "2026-05-15",
+      "codiceCUP": "A12B34C56D78E90F",
+      "codiceCIG": "Z123456789"
+    },
+    {
+      "file": {
+        "fileName": "allegato.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjcK...",
+        "size": 12345,
+        "description": "Allegato di supporto"
+      }
+    },
+    {
+      "file": {
+        "fileName": "ordine.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjcK...",
+        "size": 12345
+      },
+      "relatedDocumentType": "DatiOrdineAcquisto",
+      "idDocumento": "PO-124"
+    }
+  ]
+}
+```
 
 Response attesa
 - `201 Created` o `200 OK`

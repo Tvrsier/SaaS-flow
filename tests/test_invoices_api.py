@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 from app.auth import create_access_token  # noqa: E402
 from app.config.settings import get_settings  # noqa: E402
-from app.db.models.invoice import Client, Invoice, InvoicePayment  # noqa: E402
+from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoicePayment  # noqa: E402
 from app.db.models.user import AccountType, User  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
@@ -354,6 +354,153 @@ def test_create_invoice_rejects_totals_mismatch(client: TestClient, auth_headers
     assert response.status_code == 422
 
 
+def test_create_invoice_persists_documents_and_attachments(client: TestClient, auth_headers: dict[str, str], db_session: Session, invoice_payload: dict[str, object], company_user: User):
+    invoice_payload = dict(invoice_payload)
+    invoice_payload["invoiceNumber"] = "2026-DOC-001"
+    invoice_payload["attachments"] = [
+        {
+            "fileName": "allegato.pdf",
+            "mimeType": "application/pdf",
+            "contentBase64": "UERG",
+            "size": 3,
+            "description": "Allegato di supporto",
+        }
+    ]
+    invoice_payload["documents"] = [
+        {
+            "file": {
+                "fileName": "ordine.pdf",
+                "mimeType": "application/pdf",
+                "contentBase64": "UERG",
+                "size": 3,
+            },
+            "relatedDocumentType": "DatiOrdineAcquisto",
+            "idDocumento": "ORD-001",
+            "riferimentoNumeroLinea": [1, 2],
+            "data": "2026-05-10",
+            "codiceCIG": "Z123456789",
+        },
+        {
+            "file": {
+                "fileName": "nota.pdf",
+                "mimeType": "application/pdf",
+                "contentBase64": "UERG",
+                "size": 3,
+                "description": "Nota allegata",
+            },
+        },
+    ]
+
+    response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    invoice = db_session.scalar(select(Invoice).where(Invoice.invoice_number == "2026-DOC-001", Invoice.company_id == company_user.id))
+    assert invoice is not None
+
+    stored_documents = db_session.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id)).all()
+    assert len(stored_documents) == 3
+    assert {doc.xml_block for doc in stored_documents} == {"ALLEGATI", "DatiOrdineAcquisto"}
+    assert any(doc.description == "Allegato di supporto" for doc in stored_documents)
+    assert any(doc.document_number == "ORD-001" for doc in stored_documents)
+    assert any(doc.reference_line_numbers == [1, 2] for doc in stored_documents)
+    assert any(doc.filename == "ordine.pdf" for doc in stored_documents)
+    assert any(doc.filename == "nota.pdf" for doc in stored_documents)
+    assert any(doc.xml_block == "ALLEGATI" and doc.include_in_xml is False for doc in stored_documents)
+
+
+def test_create_invoice_deduplicates_same_file_in_attachments_and_documents(client: TestClient, auth_headers: dict[str, str], db_session: Session, invoice_payload: dict[str, object], company_user: User):
+    invoice_payload = dict(invoice_payload)
+    invoice_payload["invoiceNumber"] = "2026-ATT-001"
+    invoice_payload["attachments"] = [
+        {
+            "fileName": "solo-allegato.txt",
+            "mimeType": "text/plain",
+            "contentBase64": "QUJD",
+            "size": 3,
+            "description": "Allegato senza metadati SDI",
+        }
+    ]
+    invoice_payload["documents"] = [
+        {
+            "file": {
+                "fileName": "solo-allegato.txt",
+                "mimeType": "text/plain",
+                "contentBase64": "QUJD",
+                "size": 3,
+                "description": "Allegato senza metadati SDI",
+            }
+        }
+    ]
+
+    response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    invoice = db_session.scalar(select(Invoice).where(Invoice.invoice_number == "2026-ATT-001", Invoice.company_id == company_user.id))
+    assert invoice is not None
+
+    stored_documents = db_session.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id)).all()
+    assert len(stored_documents) == 1
+    stored_document = stored_documents[0]
+    assert stored_document.xml_block == "ALLEGATI"
+    assert stored_document.include_in_xml is False
+    assert stored_document.filename == "solo-allegato.txt"
+
+    body = response.json()
+    assert len(body["attachments"]) == 1
+    assert body["documents"] == []
+
+
+def test_create_invoice_prefers_related_document_over_attachment_for_same_file(client: TestClient, auth_headers: dict[str, str], db_session: Session, invoice_payload: dict[str, object], company_user: User):
+    invoice_payload = dict(invoice_payload)
+    invoice_payload["invoiceNumber"] = "2026-REL-001"
+    invoice_payload["attachments"] = [
+        {
+            "fileName": "ordine.pdf",
+            "mimeType": "application/pdf",
+            "contentBase64": "UERG",
+            "size": 3,
+            "description": "Duplicato da attachments",
+        }
+    ]
+    invoice_payload["documents"] = [
+        {
+            "file": {
+                "fileName": "ordine.pdf",
+                "mimeType": "application/pdf",
+                "contentBase64": "UERG",
+                "size": 3,
+                "description": "Documento con metadata SDI",
+            },
+            "relatedDocumentType": "DatiOrdineAcquisto",
+            "idDocumento": "ORD-002",
+            "riferimentoNumeroLinea": [1],
+            "data": "2026-05-11",
+            "codiceCIG": "Z123456780",
+        }
+    ]
+
+    response = client.post("/invoices", json=invoice_payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    invoice = db_session.scalar(select(Invoice).where(Invoice.invoice_number == "2026-REL-001", Invoice.company_id == company_user.id))
+    assert invoice is not None
+
+    stored_documents = db_session.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id)).all()
+    assert len(stored_documents) == 1
+    stored_document = stored_documents[0]
+    assert stored_document.xml_block == "DatiOrdineAcquisto"
+    assert stored_document.include_in_xml is True
+    assert stored_document.filename == "ordine.pdf"
+    assert stored_document.document_number == "ORD-002"
+    assert stored_document.reference_line_numbers == [1]
+
+    body = response.json()
+    assert body["attachments"] == []
+    assert len(body["documents"]) == 1
+    assert body["documents"][0]["relatedDocumentType"] == "DatiOrdineAcquisto"
+    assert body["documents"][0]["includedInXml"] is True
+
+
 def test_get_clients_returns_user_clients(client: TestClient, auth_headers: dict[str, str], company_client: Client, private_client: Client):
     response = client.get("/invoices/clients", headers=auth_headers)
 
@@ -380,3 +527,62 @@ def test_get_clients_only_returns_current_user_clients(client: TestClient, auth_
     body = response.json()
     assert len(body["data"]) == 2
     assert all(item["companyName"] != "Hidden S.r.l." for item in body["data"])
+
+
+def test_get_invoices_last_invoice_number_follows_created_at(client: TestClient, auth_headers: dict[str, str], invoice_payload: dict[str, object]):
+    first_payload = dict(invoice_payload)
+    first_payload["invoiceNumber"] = "2026-100"
+    first_payload["issueDate"] = "2026-05-01"
+
+    second_payload = dict(invoice_payload)
+    second_payload["invoiceNumber"] = "2026-011"
+    second_payload["issueDate"] = "2026-06-11"
+
+    third_payload = dict(invoice_payload)
+    third_payload["invoiceNumber"] = "2026-200"
+    third_payload["issueDate"] = "2026-05-15"
+
+    assert client.post("/invoices", json=first_payload, headers=auth_headers).status_code == 201
+    assert client.post("/invoices", json=second_payload, headers=auth_headers).status_code == 201
+    assert client.post("/invoices", json=third_payload, headers=auth_headers).status_code == 201
+
+    response = client.get("/invoices", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lastInvoiceNumber"] == "2026-200"
+
+
+def test_create_invoice_with_ddt_stores_in_metadata(client: TestClient, db_session: Session, auth_headers: dict[str, str], invoice_payload: dict[str, object]):
+    payload_with_ddt = dict(invoice_payload)
+    payload_with_ddt["ddt"] = [
+        {
+            "numeroDDT": "DDT-2026-001",
+            "dataDDT": "2026-05-10",
+            "riferimentoNumeroLinea": [1],
+        },
+        {
+            "numeroDDT": "DDT-2026-002",
+            "dataDDT": "2026-05-11",
+            "riferimentoNumeroLinea": [1, 2],
+        },
+    ]
+
+    response = client.post("/invoices", json=payload_with_ddt, headers=auth_headers)
+
+    assert response.status_code == 201
+    body = response.json()
+    invoice_id = body["id"]
+
+    persisted = db_session.get(Invoice, invoice_id)
+    assert persisted is not None
+    assert persisted.invoice_metadata is not None
+    assert "ddt" in persisted.invoice_metadata
+    assert len(persisted.invoice_metadata["ddt"]) == 2
+    assert persisted.invoice_metadata["ddt"][0]["numero"] == "DDT-2026-001"
+    assert persisted.invoice_metadata["ddt"][0]["data"] == "2026-05-10"
+    assert persisted.invoice_metadata["ddt"][0]["riferimento_linee"] == [1]
+    assert persisted.invoice_metadata["ddt"][1]["numero"] == "DDT-2026-002"
+    assert persisted.invoice_metadata["ddt"][1]["data"] == "2026-05-11"
+    assert persisted.invoice_metadata["ddt"][1]["riferimento_linee"] == [1, 2]
+

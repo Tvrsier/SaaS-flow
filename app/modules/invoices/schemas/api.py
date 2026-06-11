@@ -17,6 +17,14 @@ class InvoiceMode(IntEnum):
     DRAFT = 1
 
 
+class InvoiceRelatedDocumentType(str, Enum):
+    ORDER = "DatiOrdineAcquisto"
+    CONTRACT = "DatiContratto"
+    CONVENTION = "DatiConvenzione"
+    RECEIPT = "DatiRicezione"
+    LINKED_INVOICE = "DatiFattureCollegate"
+
+
 class InvoiceClientType(str, Enum):
     PRIVATE = "private"
     COMPANY = "company"
@@ -127,11 +135,56 @@ class InvoiceAttachmentPayload(BaseModel):
     mime_type: str = Field(..., alias="mimeType", min_length=1, max_length=255)
     content_base64: str = Field(..., alias="contentBase64", min_length=1)
     size: int = Field(..., ge=0)
+    description: str | None = Field(default=None, max_length=1000)
 
     @field_validator("content_base64")
     @classmethod
     def validate_base64(cls, value: str) -> str:
         b64decode(value, validate=True)
+        return value
+
+
+class InvoiceDocumentPayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid", populate_by_name=True)
+
+    file: InvoiceAttachmentPayload | None = None
+    related_document_type: InvoiceRelatedDocumentType | None = Field(default=None, alias="relatedDocumentType")
+    id_documento: str | None = Field(default=None, alias="idDocumento", max_length=20)
+    riferimento_numero_linea: list[int] = Field(default_factory=list, alias="riferimentoNumeroLinea")
+    data: date | None = None
+    num_item: str | None = Field(default=None, alias="numItem", max_length=20)
+    codice_commessa_convenzione: str | None = Field(default=None, alias="codiceCommessaConvenzione", max_length=100)
+    codice_cup: str | None = Field(default=None, alias="codiceCUP", max_length=15)
+    codice_cig: str | None = Field(default=None, alias="codiceCIG", max_length=15)
+
+    @model_validator(mode="after")
+    def validate_document(self) -> "InvoiceDocumentPayload":
+        if self.file is None and self.related_document_type is None:
+            raise ValueError("either file or relatedDocumentType is required")
+        if self.related_document_type is not None and not self.id_documento:
+            raise ValueError("idDocumento is required when relatedDocumentType is present")
+        if any(line_number < 1 for line_number in self.riferimento_numero_linea):
+            raise ValueError("riferimentoNumeroLinea must contain only positive integers")
+        return self
+
+
+class InvoiceDDTPayload(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid", populate_by_name=True)
+
+    numero_ddt: str = Field(..., alias="numeroDDT", min_length=1, max_length=20)
+    data_ddt: date = Field(..., alias="dataDDT")
+    riferimento_numero_linea: list[int] = Field(default_factory=list, alias="riferimentoNumeroLinea")
+
+    @field_validator("numero_ddt")
+    @classmethod
+    def normalize_numero_ddt(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("riferimento_numero_linea")
+    @classmethod
+    def validate_line_references(cls, value: list[int]) -> list[int]:
+        if any(line_number < 1 or line_number > 9999 for line_number in value):
+            raise ValueError("riferimentoNumeroLinea must contain integers between 1 and 9999")
         return value
 
 
@@ -150,6 +203,8 @@ class InvoiceCreateRequest(BaseModel):
     vat_total: Decimal = Field(..., alias="vatTotal", ge=Decimal("0"))
     total: Decimal = Field(..., ge=Decimal("0"))
     attachments: list[InvoiceAttachmentPayload] = Field(default_factory=list)
+    documents: list[InvoiceDocumentPayload] = Field(default_factory=list)
+    ddt: list[InvoiceDDTPayload] = Field(default_factory=list)
 
     @field_validator("invoice_number")
     @classmethod
@@ -221,6 +276,22 @@ class InvoiceAttachmentRead(BaseModel):
     description: str | None = None
 
 
+class InvoiceDocumentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    file: InvoiceAttachmentRead | None = None
+    related_document_type: InvoiceRelatedDocumentType | None = Field(default=None, alias="relatedDocumentType")
+    id_documento: str | None = Field(default=None, alias="idDocumento")
+    riferimento_numero_linea: list[int] = Field(default_factory=list, alias="riferimentoNumeroLinea")
+    data: date | None = None
+    num_item: str | None = Field(default=None, alias="numItem")
+    codice_commessa_convenzione: str | None = Field(default=None, alias="codiceCommessaConvenzione")
+    codice_cup: str | None = Field(default=None, alias="codiceCUP")
+    codice_cig: str | None = Field(default=None, alias="codiceCIG")
+    included_in_xml: bool = Field(alias="includedInXml")
+
+
 class InvoiceVatSummaryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -255,6 +326,7 @@ class InvoiceRead(BaseModel):
     lines: list[InvoiceLineRead]
     vat_summary: list[InvoiceVatSummaryRead] = Field(default_factory=list, alias="vatSummary")
     attachments: list[InvoiceAttachmentRead] = Field(default_factory=list)
+    documents: list[InvoiceDocumentRead] = Field(default_factory=list)
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     issued_at: datetime | None = Field(default=None, alias="issuedAt")

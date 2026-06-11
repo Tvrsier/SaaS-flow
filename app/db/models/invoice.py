@@ -4,8 +4,8 @@ from datetime import datetime, date
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Boolean, BigInteger, CheckConstraint, Date, DateTime, Enum as SAEnum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -118,6 +118,8 @@ class Invoice(Base, UUIDTimestampMixin):
     xml_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    invoice_metadata: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payments: Mapped[list["InvoicePayment"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
@@ -196,19 +198,34 @@ class InvoicePayment(Base, UUIDTimestampMixin):
     invoice: Mapped[Invoice] = relationship(back_populates="payments")
 
 
-class InvoiceAttachment(Base, UUIDTimestampMixin):
-    __tablename__ = "invoice_attachments"
-    __table_args__ = (Index("ix_invoice_attachments_invoice_id", "invoice_id"),)
+class InvoiceDocument(Base, UUIDTimestampMixin):
+    __tablename__ = "invoice_documents"
+    __table_args__ = (
+        Index("ix_invoice_documents_invoice_id", "invoice_id"),
+        Index("ix_invoice_documents_xml_block", "xml_block"),
+    )
 
     invoice_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False)
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    file_format: Mapped[str] = mapped_column(String(50), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    s3_key: Mapped[str] = mapped_column(String(512), nullable=False)
-    hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    xml_block: Mapped[str] = mapped_column(String(64), nullable=False, default="ALLEGATI", server_default=text("'ALLEGATI'"))
+
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_format: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    document_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    document_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reference_line_numbers: Mapped[list[int]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
+    document_metadata: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    included_in_xml: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=text("false"))
+    include_in_xml: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+
+
+# Compatibilità retroattiva: il vecchio nome continua a puntare allo stesso modello
+InvoiceAttachment = InvoiceDocument
 
 
 Index(
@@ -227,6 +244,7 @@ __all__ = [
     "InvoiceLine",
     "InvoiceVatSummary",
     "InvoicePayment",
+    "InvoiceDocument",
     "InvoiceAttachment",
 ]
 

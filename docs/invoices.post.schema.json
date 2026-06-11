@@ -1,0 +1,492 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gestpro.local/schemas/invoices.post.schema.json",
+  "title": "Invoice POST payload",
+  "description": "JSON Schema for the request body sent to POST /invoices. It mirrors the frontend payload produced by src/lib/invoice.ts and supports private, company, and public administration customers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mode",
+    "invoiceNumber",
+    "issueDate",
+    "currency",
+    "documentType",
+    "paymentMethod",
+    "client",
+    "lines",
+    "subtotal",
+    "vatTotal",
+    "total"
+  ],
+  "properties": {
+    "mode": {
+      "type": "integer",
+      "enum": [0, 1],
+      "description": "0 = send, 1 = draft"
+    },
+    "invoiceNumber": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "issueDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "currency": {
+      "type": "string",
+      "enum": ["EUR", "USD", "GBP", "CHF"]
+    },
+    "documentType": {
+      "type": "string",
+      "enum": [
+        "TD01",
+        "TD02",
+        "TD03",
+        "TD04",
+        "TD05",
+        "TD06",
+        "TD07",
+        "TD08",
+        "TD09",
+        "TD16",
+        "TD17",
+        "TD18",
+        "TD19",
+        "TD20",
+        "TD21",
+        "TD22",
+        "TD23",
+        "TD24",
+        "TD25",
+        "TD26",
+        "TD27",
+        "TD28"
+      ]
+    },
+    "paymentMethod": {
+      "type": "string",
+      "description": "Modalità di pagamento obbligatoria, uno tra MP01 e MP23.",
+      "enum": [
+        "MP01",
+        "MP02",
+        "MP03",
+        "MP04",
+        "MP05",
+        "MP06",
+        "MP07",
+        "MP08",
+        "MP09",
+        "MP10",
+        "MP11",
+        "MP12",
+        "MP13",
+        "MP14",
+        "MP15",
+        "MP16",
+        "MP17",
+        "MP18",
+        "MP19",
+        "MP20",
+        "MP21",
+        "MP22",
+        "MP23"
+      ]
+    },
+    "client": {
+      "$ref": "#/$defs/client"
+    },
+    "lines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "subtotal": {
+      "type": "number",
+      "minimum": 0
+    },
+    "vatTotal": {
+      "type": "number",
+      "minimum": 0
+    },
+    "total": {
+      "type": "number",
+      "minimum": 0
+    },
+    "attachments": {
+      "type": "array",
+      "description": "Optional attachments encoded in base64. Multiple files are supported.",
+      "items": {
+        "$ref": "#/$defs/attachment"
+      },
+      "default": []
+    },
+    "documents": {
+      "type": "array",
+      "description": "Optional document cards with file and related-document metadata.",
+      "items": {
+        "$ref": "#/$defs/document"
+      },
+      "default": []
+    },
+    "ddt": {
+      "type": "array",
+      "description": "Optional DDT (Documento di Trasporto) linked to the invoice. Each DDT can reference multiple invoice lines.",
+      "items": {
+        "$ref": "#/$defs/ddt"
+      },
+      "default": []
+    }
+  },
+  "$defs": {
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clientType",
+        "address",
+        "city",
+        "postalCode",
+        "province",
+        "country"
+      ],
+      "properties": {
+        "clientType": {
+          "type": "string",
+          "enum": ["private", "company", "public_administration"]
+        },
+        "firstName": {
+          "type": "string",
+          "default": ""
+        },
+        "lastName": {
+          "type": "string",
+          "default": ""
+        },
+        "companyName": {
+          "type": "string",
+          "default": ""
+        },
+        "vatNumber": {
+          "type": "string",
+          "default": ""
+        },
+        "taxCode": {
+          "type": "string",
+          "default": ""
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1
+        },
+        "city": {
+          "type": "string",
+          "minLength": 1
+        },
+        "postalCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "province": {
+          "type": "string",
+          "minLength": 1
+        },
+        "country": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pec": {
+          "type": "string",
+          "default": "0000000"
+        },
+        "recipientCode": {
+          "type": "string",
+          "default": "0000000"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "clientType": {
+                "const": "private"
+              }
+            }
+          },
+          "then": {
+            "required": ["firstName", "lastName", "taxCode"],
+            "properties": {
+              "pec": {
+                "type": "string",
+                "default": "0000000"
+              },
+              "recipientCode": {
+                "type": "string",
+                "default": "0000000"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "clientType": {
+                "enum": ["company", "public_administration"]
+              }
+            }
+          },
+          "then": {
+            "required": ["companyName", "vatNumber", "pec", "recipientCode"],
+            "properties": {
+              "pec": {
+                "type": "string",
+                "minLength": 1
+              },
+              "recipientCode": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numberLine",
+        "description",
+        "quantity",
+        "unitPrice",
+        "lineTotal",
+        "vatRate"
+      ],
+      "properties": {
+        "numberLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "unitMeasure": {
+          "type": "string",
+          "maxLength": 10,
+          "default": ""
+        },
+        "unitPrice": {
+          "type": "number",
+          "minimum": 0
+        },
+        "lineTotal": {
+          "type": "number",
+          "minimum": 0
+        },
+        "vatRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "nature": {
+          "type": "string",
+          "enum": [
+            "N1",
+            "N2.1",
+            "N2.2",
+            "N3.1",
+            "N3.2",
+            "N3.3",
+            "N3.4",
+            "N3.5",
+            "N3.6",
+            "N4",
+            "N5",
+            "N6.1",
+            "N6.2",
+            "N6.3",
+            "N6.4",
+            "N6.5",
+            "N6.6",
+            "N6.7",
+            "N6.8",
+            "N6.9",
+            "N7"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "vatRate": {
+                "const": 0
+              }
+            }
+          },
+          "then": {
+            "required": ["nature"]
+          }
+        }
+      ]
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "mimeType", "contentBase64", "size"],
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentBase64": {
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/attachment"
+        },
+        "relatedDocumentType": {
+          "type": "string",
+          "enum": [
+            "DatiOrdineAcquisto",
+            "DatiContratto",
+            "DatiConvenzione",
+            "DatiRicezione",
+            "DatiFattureCollegate",
+            "DatiDDT"
+          ]
+        },
+        "idDocumento": {
+          "type": "string"
+        },
+        "riferimentoNumeroLinea": {
+          "type": "array",
+          "description": "Optional invoice line references for related documents; omit this field when no line reference is available.",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "data": {
+          "type": "string",
+          "format": "date"
+        },
+        "numItem": {
+          "type": "string"
+        },
+        "codiceCommessaConvenzione": {
+          "type": "string"
+        },
+        "codiceCUP": {
+          "type": "string"
+        },
+        "codiceCIG": {
+          "type": "string"
+        }
+      }
+    },
+    "ddt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numeroDDT", "dataDDT"],
+      "properties": {
+        "numeroDDT": {
+          "type": "string",
+          "description": "DDT number (required)",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "dataDDT": {
+          "type": "string",
+          "format": "date",
+          "description": "DDT date (required)"
+        },
+        "riferimentoNumeroLinea": {
+          "type": "array",
+          "description": "Optional invoice line references linked to this DDT; can be empty, single value, or multiple values like [1, 2, 3].",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9999
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "mode": 1,
+      "invoiceNumber": "2026-001",
+      "issueDate": "2026-05-15",
+      "currency": "EUR",
+      "documentType": "TD01",
+      "paymentMethod": "MP05",
+      "client": {
+        "clientType": "company",
+        "companyName": "Demo S.r.l.",
+        "vatNumber": "12345678901",
+        "taxCode": "01234567890",
+        "address": "Via Roma 1",
+        "city": "Milano",
+        "postalCode": "20100",
+        "province": "MI",
+        "country": "IT",
+        "pec": "demo@pec.it",
+        "recipientCode": "ABC1234"
+      },
+      "lines": [
+        {
+          "numberLine": 1,
+          "description": "Servizio A",
+          "quantity": 2,
+          "unitMeasure": "h",
+          "unitPrice": 50,
+          "lineTotal": 100,
+          "vatRate": 22
+        }
+      ],
+      "subtotal": 100,
+      "vatTotal": 22,
+      "total": 122,
+      "attachments": [
+        {
+          "fileName": "allegato.pdf",
+          "mimeType": "application/pdf",
+          "contentBase64": "JVBERi0xLjQKJ...",
+          "size": 1024
+        }
+      ],
+      "ddt": [
+        {
+          "numeroDDT": "DDT-2026-001",
+          "dataDDT": "2026-05-10",
+          "riferimentoNumeroLinea": [1]
+        }
+      ]
+    }
+  ]
+}
+

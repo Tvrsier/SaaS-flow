@@ -16,10 +16,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.db.models.invoice import Client, Invoice, InvoiceAttachment, InvoiceLine, InvoicePayment, InvoiceVatSummary
+from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoiceLine, InvoicePayment, InvoiceVatSummary
 from app.db.models.user import User
 from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
-from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceLinePayload, InvoiceRead, InvoicesListResponse
+from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceDocumentPayload, InvoiceLinePayload, InvoiceRead, InvoicesListResponse
 
 TWOPLACES = Decimal("0.01")
 ZERO = Decimal("0.00")
@@ -85,6 +85,7 @@ class InvoiceService:
             client = self._resolve_or_create_client(current_user, payload.client, test_mode=test_mode)
             test_invoice_id = uuid4() if test_mode else None
 
+            invoice_metadata = self._build_invoice_metadata(payload)
             invoice = Invoice(
                 company_id=current_user.id,
                 customer_id=client.id,
@@ -104,6 +105,7 @@ class InvoiceService:
                 withholding_amount=ZERO,
                 stamp_duty_amount=ZERO,
                 rounding_amount=ZERO,
+                invoice_metadata=invoice_metadata,
             )
             if test_mode:
                 invoice.id = cast(UUID, test_invoice_id)
@@ -126,13 +128,42 @@ class InvoiceService:
                 for vat_rate, nature, taxable_amount, vat_amount in calc.vat_groups
             ]
             payments = [self._create_payment(invoice_uuid, payload.payment_method, calc.total, payload.issue_date)]
-            attachments = self._create_attachments(invoice_uuid, payload.attachments, written_files)
+            related_document_fingerprints = {
+                self._attachment_fingerprint(document.file)
+                for document in payload.documents
+                if document.related_document_type is not None and document.file is not None
+            }
+
+            attachment_payloads: list[InvoiceAttachmentPayload] = []
+            attachment_fingerprints: set[tuple[str, str, str, int]] = set()
+            for attachment in payload.attachments:
+                fingerprint = self._attachment_fingerprint(attachment)
+                if fingerprint in related_document_fingerprints or fingerprint in attachment_fingerprints:
+                    continue
+                attachment_payloads.append(attachment)
+                attachment_fingerprints.add(fingerprint)
+
+            document_payloads: list[InvoiceDocumentPayload] = []
+            for document in payload.documents:
+                if document.related_document_type is None and document.file is not None:
+                    fingerprint = self._attachment_fingerprint(document.file)
+                    if fingerprint in related_document_fingerprints or fingerprint in attachment_fingerprints:
+                        continue
+                    attachment_payloads.append(document.file)
+                    attachment_fingerprints.add(fingerprint)
+                    continue
+                if document.related_document_type is not None:
+                    document_payloads.append(document)
+
+            attachments = self._create_attachments(invoice_uuid, attachment_payloads, written_files)
+            documents = self._create_documents(invoice_uuid, document_payloads, written_files)
 
             if not test_mode:
                 self.db.add_all(lines)
                 self.db.add_all(vat_summaries)
                 self.db.add_all(payments)
                 self.db.add_all(attachments)
+                self.db.add_all(documents)
                 self.db.commit()
                 self.db.refresh(invoice)
                 self.db.refresh(client)
@@ -144,10 +175,12 @@ class InvoiceService:
                     self.db.refresh(payment)
                 for attachment in attachments:
                     self.db.refresh(attachment)
+                for document in documents:
+                    self.db.refresh(document)
             else:
                 self._cleanup_files(written_files)
 
-            return InvoiceRead.model_validate(self._serialize_invoice(invoice, client, lines, vat_summaries, attachments))
+            return InvoiceRead.model_validate(self._serialize_invoice(invoice, client, lines, vat_summaries, attachments, documents))
         except HTTPException:
             self.db.rollback()
             self._cleanup_files(written_files)
@@ -172,12 +205,7 @@ class InvoiceService:
         query = query.offset((page - 1) * per_page).limit(per_page)
 
         invoices = self.db.scalars(query).all()
-        last_invoice_number = self.db.scalar(
-            select(Invoice.invoice_number)
-            .where(Invoice.company_id == current_user.id, Invoice.deleted_at.is_(None))
-            .order_by(Invoice.issue_date.desc(), Invoice.created_at.desc())
-            .limit(1)
-        )
+        last_invoice_number = self._get_last_invoice_number(current_user.id)
 
         data: list[dict[str, object]] = []
         for invoice in invoices:
@@ -185,10 +213,11 @@ class InvoiceService:
             client = cast(Optional[Client], self.db.get(Client, client_ref) if client_ref else None)
             lines = list(self.db.scalars(select(InvoiceLine).where(InvoiceLine.invoice_id == invoice.id).order_by(InvoiceLine.line_number.asc())).all())
             summaries = list(self.db.scalars(select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice.id).order_by(InvoiceVatSummary.vat_rate.asc())).all())
-            attachments = list(self.db.scalars(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id).order_by(InvoiceAttachment.created_at.asc())).all())
+            attachments = list(self.db.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id, InvoiceDocument.xml_block == "ALLEGATI").order_by(InvoiceDocument.created_at.asc())).all())
+            documents = list(self.db.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id, InvoiceDocument.xml_block != "ALLEGATI").order_by(InvoiceDocument.created_at.asc())).all())
             if client is None:
                 continue
-            data.append(self._serialize_invoice(invoice, client, lines, summaries, attachments))
+            data.append(self._serialize_invoice(invoice, client, lines, summaries, attachments, documents))
 
         return InvoicesListResponse.model_validate({
             "data": data,
@@ -198,6 +227,36 @@ class InvoiceService:
             "total": int(total),
             "count": len(data),
         })
+
+    def _get_last_invoice_number(self, company_id: UUID) -> str | None:
+        latest_year = self.db.scalar(
+            select(func.max(Invoice.invoice_year)).where(Invoice.company_id == company_id, Invoice.deleted_at.is_(None))
+        )
+        if latest_year is None:
+            return None
+
+        invoices = list(
+            self.db.scalars(
+                select(Invoice).where(
+                    Invoice.company_id == company_id,
+                    Invoice.deleted_at.is_(None),
+                    Invoice.invoice_year == latest_year,
+                    Invoice.invoice_number.is_not(None),
+                )
+            ).all()
+        )
+        if not invoices:
+            return None
+
+        return max(invoices, key=self._invoice_recency_key).invoice_number
+
+    @staticmethod
+    def _invoice_recency_key(invoice: Invoice) -> tuple[datetime, int, str]:
+        created_at = invoice.created_at or datetime.min.replace(tzinfo=timezone.utc)
+        invoice_number = (invoice.invoice_number or "").strip()
+        match = re.search(r"(\d+)$", invoice_number)
+        suffix = int(match.group(1)) if match else -1
+        return created_at, suffix, invoice_number
 
     def _is_test_mode(self, invoice_form_test: str | None) -> bool:
         return isinstance(invoice_form_test, str) and invoice_form_test.lower() == "true"
@@ -241,6 +300,20 @@ class InvoiceService:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"message": "vatTotal does not match invoice lines"})
         if payload.total.quantize(TWOPLACES, rounding=ROUND_HALF_UP) != calc.total:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"message": "total does not match invoice lines"})
+
+    @staticmethod
+    def _build_invoice_metadata(payload: InvoiceCreateRequest) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        if payload.ddt:
+            metadata["ddt"] = [
+                {
+                    "numero": ddt.numero_ddt,
+                    "data": ddt.data_ddt.isoformat(),
+                    "riferimento_linee": ddt.riferimento_numero_linea,
+                }
+                for ddt in payload.ddt
+            ]
+        return metadata
 
     def _resolve_or_create_client(self, current_user: User, payload: InvoiceClientPayload, test_mode: bool) -> Client:
         existing = self._find_existing_client(current_user, payload)
@@ -401,14 +474,14 @@ class InvoiceService:
         invoice_id: UUID,
         attachments: list[InvoiceAttachmentPayload],
         written_files: list[Path],
-    ) -> list[InvoiceAttachment]:
+    ) -> list[InvoiceDocument]:
         if not attachments:
             return []
 
         base_dir = Path(self.settings.public_data_dir) / "invoices" / str(invoice_id) / "attachments"
         base_dir.mkdir(parents=True, exist_ok=True)
 
-        created: list[InvoiceAttachment] = []
+        created: list[InvoiceDocument] = []
         for attachment in attachments:
             decoded = base64.b64decode(attachment.content_base64, validate=True)
             if len(decoded) != attachment.size:
@@ -426,17 +499,95 @@ class InvoiceService:
             written_files.append(file_path)
 
             created.append(
-                InvoiceAttachment(
+                InvoiceDocument(
                     id=attachment_id,
                     invoice_id=invoice_id,
+                    xml_block="ALLEGATI",
                     filename=attachment.file_name,
                     mime_type=attachment.mime_type,
                     file_format=self._file_format(attachment.file_name, attachment.mime_type),
                     size_bytes=len(decoded),
                     s3_key=relative_key,
                     hash=hashlib.sha256(decoded).hexdigest(),
-                    description=None,
-                    included_in_xml=False,
+                    document_number=None,
+                    document_date=None,
+                    reference_line_numbers=[],
+                    document_metadata={},
+                    description=attachment.description,
+                    include_in_xml=False,
+                )
+            )
+        return created
+
+    def _create_documents(
+        self,
+        invoice_id: UUID,
+        documents: list[InvoiceDocumentPayload],
+        written_files: list[Path],
+    ) -> list[InvoiceDocument]:
+        if not documents:
+            return []
+
+        created: list[InvoiceDocument] = []
+        for document in documents:
+            file_payload = document.file
+            if file_payload is not None:
+                decoded = base64.b64decode(file_payload.content_base64, validate=True)
+                if len(decoded) != file_payload.size:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={"message": f"Attachment size mismatch for {file_payload.file_name}"},
+                    )
+
+                safe_name = self._safe_filename(file_payload.file_name)
+                file_id = uuid4()
+                relative_key = f"invoices/{invoice_id}/documents/{file_id}/{safe_name}"
+                file_path = Path(self.settings.public_data_dir) / relative_key
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_bytes(decoded)
+                written_files.append(file_path)
+
+                filename = file_payload.file_name
+                mime_type = file_payload.mime_type
+                file_format = self._file_format(file_payload.file_name, file_payload.mime_type)
+                size_bytes = len(decoded)
+                s3_key = relative_key
+                file_hash = hashlib.sha256(decoded).hexdigest()
+                description = file_payload.description
+            else:
+                filename = None
+                mime_type = None
+                file_format = None
+                size_bytes = None
+                s3_key = None
+                file_hash = None
+                description = None
+
+            metadata: dict[str, object] = {
+                "numItem": document.num_item,
+                "codiceCommessaConvenzione": document.codice_commessa_convenzione,
+                "codiceCUP": document.codice_cup,
+                "codiceCIG": document.codice_cig,
+            }
+            metadata = {key: value for key, value in metadata.items() if value is not None}
+
+            created.append(
+                InvoiceDocument(
+                    id=uuid4(),
+                    invoice_id=invoice_id,
+                    xml_block=(document.related_document_type.value if document.related_document_type else "ALLEGATI"),
+                    filename=filename,
+                    mime_type=mime_type,
+                    file_format=file_format,
+                    size_bytes=size_bytes,
+                    s3_key=s3_key,
+                    hash=file_hash,
+                    document_number=document.id_documento,
+                    document_date=document.data,
+                    reference_line_numbers=document.riferimento_numero_linea,
+                    document_metadata=metadata,
+                    description=description,
+                    include_in_xml=True,
                 )
             )
         return created
@@ -444,6 +595,10 @@ class InvoiceService:
     @staticmethod
     def _safe_filename(filename: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name)
+
+    @staticmethod
+    def _attachment_fingerprint(attachment: InvoiceAttachmentPayload) -> tuple[str, str, str, int]:
+        return attachment.file_name, attachment.mime_type, attachment.content_base64, attachment.size
 
     @staticmethod
     def _file_format(filename: str, mime_type: str) -> str:
@@ -468,7 +623,8 @@ class InvoiceService:
         client: Client,
         lines: list[InvoiceLine],
         vat_summaries: list[InvoiceVatSummary],
-        attachments: list[InvoiceAttachment],
+        attachments: list[InvoiceDocument],
+        documents: list[InvoiceDocument],
     ) -> dict[str, object]:
         return {
             "id": str(invoice.id),
@@ -542,10 +698,40 @@ class InvoiceService:
                     "size": attachment.size_bytes,
                     "s3Key": attachment.s3_key,
                     "hash": attachment.hash,
-                    "includedInXml": attachment.included_in_xml,
+                    "includedInXml": attachment.include_in_xml,
                     "description": attachment.description,
                 }
                 for attachment in attachments
+            ],
+            "documents": [
+                {
+                    "id": str(document.id),
+                    "file": (
+                        {
+                            "id": str(document.id),
+                            "fileName": document.filename,
+                            "mimeType": document.mime_type,
+                            "fileFormat": document.file_format,
+                            "size": document.size_bytes,
+                            "s3Key": document.s3_key,
+                            "hash": document.hash,
+                            "includedInXml": document.include_in_xml,
+                            "description": document.description,
+                        }
+                        if document.filename or document.mime_type or document.s3_key or document.hash
+                        else None
+                    ),
+                    "relatedDocumentType": document.xml_block if document.xml_block != "ALLEGATI" else None,
+                    "idDocumento": document.document_number,
+                    "riferimentoNumeroLinea": document.reference_line_numbers or [],
+                    "data": document.document_date,
+                    "numItem": (document.document_metadata or {}).get("numItem"),
+                    "codiceCommessaConvenzione": (document.document_metadata or {}).get("codiceCommessaConvenzione"),
+                    "codiceCUP": (document.document_metadata or {}).get("codiceCUP"),
+                    "codiceCIG": (document.document_metadata or {}).get("codiceCIG"),
+                    "includedInXml": document.include_in_xml,
+                }
+                for document in documents
             ],
             "createdAt": invoice.created_at,
             "updatedAt": invoice.updated_at,
