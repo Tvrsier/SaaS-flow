@@ -1,0 +1,1 @@
+"""Passive invoices management module"""

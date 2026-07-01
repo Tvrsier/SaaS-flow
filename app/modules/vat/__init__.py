@@ -1,0 +1,1 @@
+"""VAT management module"""

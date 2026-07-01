@@ -1,3 +1,4 @@
+uliweb-alembic
 pytest
 DateTime~=4.3
 SQLAlchemy~=2.0.41
