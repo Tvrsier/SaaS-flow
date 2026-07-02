@@ -66,7 +66,7 @@
     },
     "paymentMethod": {
       "type": "string",
-      "description": "Modalità di pagamento obbligatoria, uno tra MP01 e MP23.",
+      "description": "Modalità di pagamento obbligatoria.",
       "enum": [
         "MP01",
         "MP02",
@@ -92,6 +92,14 @@
         "MP22",
         "MP23"
       ]
+    },
+    "paymentDetails": {
+      "$ref": "#/$defs/paymentDetails"
+    },
+    "savePaymentProfile": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, create or update the user's payment profile for the selected payment method."
     },
     "client": {
       "$ref": "#/$defs/client"
@@ -131,16 +139,27 @@
       },
       "default": []
     },
-    "ddt": {
-      "type": "array",
-      "description": "Optional DDT (Documento di Trasporto) linked to the invoice. Each DDT can reference multiple invoice lines.",
-      "items": {
-        "$ref": "#/$defs/ddt"
-      },
-      "default": []
+    "esigibilitaIva": {
+      "type": "string",
+      "enum": ["I", "D", "S"],
+      "description": "Esigibilità IVA: I = immediata, D = differita, S = split payment"
     }
   },
   "$defs": {
+    "paymentDetails": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "beneficiary": { "type": ["string", "null"], "maxLength": 200 },
+        "financialInstitution": { "type": ["string", "null"], "maxLength": 200 },
+        "iban": { "type": ["string", "null"], "maxLength": 34 },
+        "abi": { "type": ["string", "null"], "pattern": "^\\d{5}$" },
+        "cab": { "type": ["string", "null"], "pattern": "^\\d{5}$" },
+        "bic": { "type": ["string", "null"], "maxLength": 11 },
+        "paymentCode": { "type": ["string", "null"], "maxLength": 60 },
+        "postalOfficeCode": { "type": ["string", "null"], "maxLength": 20 }
+      }
+    },
     "client": {
       "type": "object",
       "additionalProperties": false,
@@ -407,33 +426,6 @@
           "type": "string"
         }
       }
-    },
-    "ddt": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["numeroDDT", "dataDDT"],
-      "properties": {
-        "numeroDDT": {
-          "type": "string",
-          "description": "DDT number (required)",
-          "minLength": 1,
-          "maxLength": 20
-        },
-        "dataDDT": {
-          "type": "string",
-          "format": "date",
-          "description": "DDT date (required)"
-        },
-        "riferimentoNumeroLinea": {
-          "type": "array",
-          "description": "Optional invoice line references linked to this DDT; can be empty, single value, or multiple values like [1, 2, 3].",
-          "items": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9999
-          }
-        }
-      }
     }
   },
   "examples": [
@@ -444,6 +436,11 @@
       "currency": "EUR",
       "documentType": "TD01",
       "paymentMethod": "MP05",
+      "savePaymentProfile": true,
+      "paymentDetails": {
+        "beneficiary": "Demo S.r.l.",
+        "iban": "IT60X0542811101000000123456"
+      },
       "client": {
         "clientType": "company",
         "companyName": "Demo S.r.l.",
@@ -479,14 +476,7 @@
           "size": 1024
         }
       ],
-      "ddt": [
-        {
-          "numeroDDT": "DDT-2026-001",
-          "dataDDT": "2026-05-10",
-          "riferimentoNumeroLinea": [1]
-        }
-      ]
+      "esigibilitaIva": "I"
     }
   ]
 }
-

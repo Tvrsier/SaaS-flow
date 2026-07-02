@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import warnings
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from logging import getLogger
 from typing import Any, Generator, cast
 from uuid import UUID, uuid4
@@ -14,14 +15,16 @@ warnings.filterwarnings(
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth import create_access_token
 from app.config.settings import get_settings
-from app.db.models.user import AccountType, User
+from app.db.models.invoice import Invoice, InvoiceVatSummary, VatMovement, VatPeriod, VatSettlement
+from app.db.models.user import AccountType, User, UserPaymentProfile
 from app.db.session import get_db
 from app.main import app
+from app.modules.invoices.domain.enums import DocumentType, InvoiceStatus, PaymentMethod
 
 logger = getLogger("uvicorn.error")
 MOCK_PASSWORD = "AtlasFatturazione2025.."
@@ -182,6 +185,7 @@ def test_register_login_me_flow(client: TestClient, patch_user_ids):
 
     assert me.status_code == 200
     assert me.json()["email"] == "mario@example.com"
+    assert me.json()["paymentProfiles"] == []
 
 
 def test_login_invalid_credentials(client: TestClient, db_session: Session, patch_user_ids):
@@ -280,6 +284,8 @@ def test_invoice_test_header_bypasses_auth_in_dev(client: TestClient, db_session
             "issueDate": "2026-05-15",
             "currency": "EUR",
             "documentType": "TD01",
+            "paymentMethod": "MP01",
+            "paymentDetails": None,
             "client": {
                 "clientType": "company",
                 "companyName": "Demo S.r.l.",
@@ -326,6 +332,8 @@ def test_invoice_test_header_does_not_bypass_auth_outside_dev(client: TestClient
             "issueDate": "2026-05-15",
             "currency": "EUR",
             "documentType": "TD01",
+            "paymentMethod": "MP01",
+            "paymentDetails": None,
             "client": {
                 "clientType": "company",
                 "companyName": "Demo S.r.l.",
@@ -399,6 +407,88 @@ def test_register_company_persists_user_address(client: TestClient, db_session: 
     assert address.address == "Via Roma 1"
 
 
+def test_register_company_with_mp05_profile_persists_payment_profile(client: TestClient, db_session: Session, patch_user_ids):
+    response = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda-profile@example.com",
+            "password": "whatever123",
+            "codiceFiscale": None,
+            "partitaIva": "01234567891",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "legalAddress": "Via Roma 1",
+            "residenceCountry": "IT",
+            "residenceProvince": "MI",
+            "residenceComune": "Milano",
+            "residencePostal": "20100",
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+            "paymentProfiles": [
+                {
+                    "paymentMethod": "MP05",
+                    "beneficiary": "Atlas SRL",
+                    "iban": "it60 x05428 11101 000000123456",
+                    "financialInstitution": "Banca Demo",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    user = db_session.scalar(select(User).where(User.email == "azienda-profile@example.com"))
+    assert user is not None
+
+    profile = db_session.scalar(
+        select(UserPaymentProfile).where(
+            UserPaymentProfile.user_id == user.id,
+            UserPaymentProfile.payment_method == PaymentMethod.MP05,
+        )
+    )
+    assert profile is not None
+    assert profile.beneficiary == "Atlas SRL"
+    assert profile.iban == "IT60X0542811101000000123456"
+
+
+def test_register_rejects_duplicate_payment_profile_method(client: TestClient):
+    response = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda-dup-profile@example.com",
+            "password": "whatever123",
+            "codiceFiscale": None,
+            "partitaIva": "01234567892",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "legalAddress": "Via Roma 1",
+            "residenceCountry": "IT",
+            "residenceProvince": "MI",
+            "residenceComune": "Milano",
+            "residencePostal": "20100",
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+            "paymentProfiles": [
+                {"paymentMethod": "MP05", "beneficiary": "Atlas SRL", "iban": "IT60X0542811101000000123456"},
+                {"paymentMethod": "MP05", "paymentCode": "DUP"},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_register_company_requires_address_fields(client: TestClient):
     response = client.post(
         "/auth/register",
@@ -467,3 +557,231 @@ def test_me_addresses_returns_saved_user_addresses(client: TestClient, db_sessio
     body = response.json()
     assert len(body["data"]) == 1
     assert body["data"][0]["address"] == "Via Roma 1"
+
+
+def test_me_returns_payment_profiles_with_camel_case_keys(client: TestClient):
+    register = client.post(
+        "/auth/register",
+        json={
+            "accountType": "azienda",
+            "email": "azienda-me-profile@example.com",
+            "password": "whatever123",
+            "codiceFiscale": None,
+            "partitaIva": "01234567893",
+            "phone": None,
+            "mobile": None,
+            "companyName": "Atlas SRL",
+            "legalAddress": "Via Roma 1",
+            "residenceCountry": "IT",
+            "residenceProvince": "MI",
+            "residenceComune": "Milano",
+            "residencePostal": "20100",
+            "firstName": None,
+            "lastName": None,
+            "nationality": None,
+            "birthDate": None,
+            "birthProvince": None,
+            "birthComune": None,
+            "paymentProfiles": [
+                {
+                    "paymentMethod": "MP05",
+                    "beneficiary": "Atlas SRL",
+                    "financialInstitution": "Banca Demo",
+                    "iban": "it60x0542811101000000123456",
+                    "abi": "05428",
+                    "cab": "11101",
+                    "bic": "bcititmm",
+                    "paymentCode": "RIF-001",
+                    "postalOfficeCode": None,
+                }
+            ],
+        },
+    )
+    assert register.status_code == 201
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "azienda-me-profile@example.com", "password": MOCK_PASSWORD},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    body = me.json()
+    assert isinstance(body["paymentProfiles"], list)
+    assert len(body["paymentProfiles"]) == 1
+    profile = body["paymentProfiles"][0]
+    assert profile["paymentMethod"] == "MP05"
+    assert profile["financialInstitution"] == "Banca Demo"
+    assert profile["iban"] == "IT60X0542811101000000123456"
+    assert profile["bic"] == "BCITITMM"
+    assert profile["paymentCode"] == "RIF-001"
+
+
+def test_login_syncs_quarterly_vat_and_aligns_existing_active_invoices(client: TestClient, db_session: Session, patch_user_ids):
+    company_user = _create_user(
+        db_session,
+        email="vat-sync@example.com",
+        account_type=AccountType.azienda,
+        company_name="VAT Sync SRL",
+        partita_iva="01234567890",
+        codice_fiscale="01234567890",
+    )
+
+    today = datetime.now(timezone.utc).date()
+    current_quarter = ((today.month - 1) // 3) + 1
+    if current_quarter == 1:
+        previous_year = today.year - 1
+        previous_quarter = 4
+    else:
+        previous_year = today.year
+        previous_quarter = current_quarter - 1
+    previous_quarter_start_month = (previous_quarter - 1) * 3 + 1
+    issue_date = date(previous_year, previous_quarter_start_month, 15)
+
+    invoice = Invoice(
+        company_id=company_user.id,
+        customer_id=None,
+        client_id=None,
+        invoice_number="VAT-SYNC-001",
+        invoice_year=issue_date.year,
+        invoice_section="",
+        document_type=DocumentType.TD01,
+        status=InvoiceStatus.READY,
+        issue_date=issue_date,
+        due_date=None,
+        currency="EUR",
+        notes=None,
+        taxable_amount=Decimal("100.00"),
+        vat_amount=Decimal("22.00"),
+        total_amount=Decimal("122.00"),
+        withholding_amount=Decimal("0.00"),
+        stamp_duty_amount=Decimal("0.00"),
+        rounding_amount=Decimal("0.00"),
+        invoice_metadata={},
+        esigibilita_iva=None,
+        issued_at=None,
+        deleted_at=None,
+    )
+    db_session.add(invoice)
+    db_session.flush()
+
+    vat_summary = InvoiceVatSummary(
+        invoice_id=invoice.id,
+        vat_rate=Decimal("22.00"),
+        vat_nature=None,
+        taxable_amount=Decimal("100.00"),
+        vat_amount=Decimal("22.00"),
+    )
+    db_session.add(vat_summary)
+    db_session.commit()
+
+    initial_movements = db_session.scalars(
+        select(VatMovement).where(VatMovement.source_invoice_id == invoice.id)
+    ).all()
+    assert initial_movements == []
+
+    login = client.post(
+        "/auth/login",
+        json={
+            "email": company_user.email,
+            "password": MOCK_PASSWORD,
+        },
+    )
+    assert login.status_code == 200
+
+    synced_movements = db_session.scalars(
+        select(VatMovement).where(VatMovement.source_invoice_id == invoice.id)
+    ).all()
+    assert len(synced_movements) == 1
+    assert synced_movements[0].movement_type == "DEBIT"
+    assert synced_movements[0].vat_amount == Decimal("22.00")
+
+    previous_period = db_session.scalar(
+        select(VatPeriod).where(
+            VatPeriod.company_id == company_user.id,
+            VatPeriod.frequency == "QUARTERLY",
+            VatPeriod.year == previous_year,
+            VatPeriod.period_index == previous_quarter,
+        )
+    )
+    assert previous_period is not None
+    assert previous_period.status == "CLOSED"
+
+    previous_settlement = db_session.scalar(
+        select(VatSettlement).where(VatSettlement.period_id == previous_period.id)
+    )
+    assert previous_settlement is not None
+
+
+def test_login_sync_skips_split_payment_active_invoice_with_legacy_string_value(client: TestClient, db_session: Session, patch_user_ids):
+    company_user = _create_user(
+        db_session,
+        email="vat-split-sync@example.com",
+        account_type=AccountType.azienda,
+        company_name="VAT Split Sync SRL",
+        partita_iva="01234567891",
+        codice_fiscale="01234567891",
+    )
+
+    today = datetime.now(timezone.utc).date()
+    current_quarter = ((today.month - 1) // 3) + 1
+    if current_quarter == 1:
+        previous_year = today.year - 1
+        previous_quarter = 4
+    else:
+        previous_year = today.year
+        previous_quarter = current_quarter - 1
+    issue_date = date(previous_year, ((previous_quarter - 1) * 3) + 1, 20)
+
+    invoice = Invoice(
+        company_id=company_user.id,
+        customer_id=None,
+        client_id=None,
+        invoice_number="VAT-SPLIT-SYNC-001",
+        invoice_year=issue_date.year,
+        invoice_section="",
+        document_type=DocumentType.TD01,
+        status=InvoiceStatus.READY,
+        issue_date=issue_date,
+        due_date=None,
+        currency="EUR",
+        notes=None,
+        taxable_amount=Decimal("600.00"),
+        vat_amount=Decimal("132.00"),
+        total_amount=Decimal("732.00"),
+        withholding_amount=Decimal("0.00"),
+        stamp_duty_amount=Decimal("0.00"),
+        rounding_amount=Decimal("0.00"),
+        invoice_metadata={},
+        esigibilita_iva=cast(Any, "S"),
+        issued_at=None,
+        deleted_at=None,
+    )
+    db_session.add(invoice)
+    db_session.flush()
+    db_session.add(
+        InvoiceVatSummary(
+            invoice_id=invoice.id,
+            vat_rate=Decimal("22.00"),
+            vat_nature=None,
+            taxable_amount=Decimal("600.00"),
+            vat_amount=Decimal("132.00"),
+        )
+    )
+    db_session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={
+            "email": company_user.email,
+            "password": MOCK_PASSWORD,
+        },
+    )
+    assert login.status_code == 200
+
+    synced_movements = db_session.scalars(
+        select(VatMovement).where(VatMovement.source_invoice_id == invoice.id)
+    ).all()
+    assert synced_movements == []

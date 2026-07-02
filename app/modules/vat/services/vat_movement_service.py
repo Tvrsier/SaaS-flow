@@ -11,6 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models.invoice import Invoice, InvoiceVatSummary, PassiveInvoice, PassiveInvoiceVatSummary, VatMovement, VatPeriod
+from app.modules.invoices.domain.enums import EsigibilitaIVA
 from app.modules.vat.services.vat_period_service import VatPeriodService
 
 logger = logging.getLogger("GestPro")
@@ -42,60 +43,9 @@ class VatMovementService:
         if not invoice:
             raise ValueError(f"Invoice not found: {invoice_id}")
 
-        # Get VAT summaries
-        query = select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice_id)
-        vat_summaries = self.db.scalars(query).all()
-
-        if not vat_summaries:
-            logger.warning(f"No VAT summaries found for invoice {invoice_id}")
-            return []
-
-        # Determine VAT competence date (use issue_date for now)
-        vat_competence_date = invoice.issue_date
-
-        # Get or create period
-        # Assume company has a default frequency (QUARTERLY for now, should be configurable)
-        period = self.period_service.get_or_create_period(
-            invoice.company_id,
-            vat_competence_date,
-            "QUARTERLY",
-        )
-
-        # Check if period is closed/settled
-        if period.status in ("CLOSED", "SETTLED"):
-            raise ValueError(
-                f"Cannot create movements for invoice in {period.status} period. "
-                f"Period: {period.year}-{period.frequency}-{period.period_index}"
-            )
-
-        # Create movements
-        movements = []
-        for summary in vat_summaries:
-            movement = VatMovement(
-                company_id=invoice.company_id,
-                period_id=period.id,
-                source_type="ACTIVE_INVOICE",
-                source_invoice_id=invoice_id,
-                source_passive_invoice_id=None,
-                movement_type="DEBIT",
-                document_date=invoice.issue_date,
-                registration_date=invoice.issue_date,
-                vat_competence_date=vat_competence_date,
-                vat_rate=summary.vat_rate,
-                vat_nature=summary.vat_nature,
-                taxable_amount=summary.taxable_amount,
-                vat_amount=summary.vat_amount,
-            )
-            self.db.add(movement)
-            movements.append(movement)
-
-        self.db.flush()
-
-        logger.info(
-            f"Created {len(movements)} DEBIT VAT movements for active invoice {invoice_id} in period {period.id}"
-        )
-
-        return movements
+        period = self._get_open_period_for_active_invoice(invoice)
+        vat_summaries = self._get_active_invoice_vat_summaries(invoice_id)
+        return self._create_active_invoice_movements(invoice, period, vat_summaries)
 
     def create_from_passive_invoice(self, passive_invoice_id: UUID) -> list[VatMovement]:
         """
@@ -184,6 +134,12 @@ class VatMovementService:
         Raises:
             ValueError: If invoice not found or period is closed/settled
         """
+        invoice = self.db.get(Invoice, invoice_id)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_id}")
+
+        self._get_open_period_for_active_invoice(invoice)
+
         # Delete existing movements
         delete_query = delete(VatMovement).where(
             VatMovement.source_type == "ACTIVE_INVOICE",
@@ -224,3 +180,83 @@ class VatMovementService:
 
         # Create new movements
         return self.create_from_passive_invoice(passive_invoice_id)
+
+    def _get_open_period_for_active_invoice(self, invoice: Invoice) -> VatPeriod:
+        period = self.period_service.get_or_create_period(
+            invoice.company_id,
+            invoice.issue_date,
+            "QUARTERLY",
+        )
+
+        if period.status in ("CLOSED", "SETTLED"):
+            raise ValueError(
+                f"Cannot create movements for invoice in {period.status} period. "
+                f"Period: {period.year}-{period.frequency}-{period.period_index}"
+            )
+
+        return period
+
+    def _get_active_invoice_vat_summaries(self, invoice_id: UUID) -> list[InvoiceVatSummary]:
+        query = select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice_id)
+        vat_summaries = self.db.scalars(query).all()
+
+        if not vat_summaries:
+            logger.warning(f"No VAT summaries found for invoice {invoice_id}")
+            return []
+
+        return vat_summaries
+
+    def _create_active_invoice_movements(
+        self,
+        invoice: Invoice,
+        period: VatPeriod,
+        vat_summaries: list[InvoiceVatSummary],
+    ) -> list[VatMovement]:
+        if self._is_split_payment_invoice(invoice):
+            logger.info(
+                "Skipping DEBIT VAT movements for split-payment invoice %s",
+                invoice.id,
+            )
+            return []
+
+        movements = []
+        for summary in vat_summaries:
+            movement = VatMovement(
+                company_id=invoice.company_id,
+                period_id=period.id,
+                source_type="ACTIVE_INVOICE",
+                source_invoice_id=invoice.id,
+                source_passive_invoice_id=None,
+                movement_type="DEBIT",
+                document_date=invoice.issue_date,
+                registration_date=invoice.issue_date,
+                vat_competence_date=invoice.issue_date,
+                vat_rate=summary.vat_rate,
+                vat_nature=summary.vat_nature,
+                taxable_amount=summary.taxable_amount,
+                vat_amount=summary.vat_amount,
+            )
+            self.db.add(movement)
+            movements.append(movement)
+
+        self.db.flush()
+
+        logger.info(
+            "Created %s DEBIT VAT movements for active invoice %s in period %s",
+            len(movements),
+            invoice.id,
+            period.id,
+        )
+
+        return movements
+
+    @staticmethod
+    def _is_split_payment_invoice(invoice: Invoice) -> bool:
+        esigibilita = invoice.esigibilita_iva
+        if esigibilita is None:
+            return False
+        if isinstance(esigibilita, EsigibilitaIVA):
+            return esigibilita == EsigibilitaIVA.SPLIT
+        if isinstance(esigibilita, str):
+            return esigibilita in {EsigibilitaIVA.SPLIT.value, EsigibilitaIVA.SPLIT.name}
+        return False

@@ -225,9 +225,9 @@ The migration creates:
 ## Future Enhancements
 
 ### Automatic Period Opening
-- Implement background job to automatically open new periods
-- Trigger on user login after period expiration
-- Configuration per company for frequency (MONTHLY/QUARTERLY)
+- Trigger on user login after period expiration (**implemented for QUARTERLY**)
+- Active invoices are aligned to VAT movements at login before closing expired periods
+- Configuration per company for frequency (MONTHLY/QUARTERLY) remains a future enhancement
 
 ### SDI Integration
 - Connect passive invoice import to SDI notifications

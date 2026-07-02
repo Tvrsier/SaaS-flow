@@ -16,10 +16,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoiceLine, InvoicePayment, InvoiceVatSummary
-from app.db.models.user import User
-from app.modules.invoices.domain.enums import ClientType, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
+from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoiceLine, InvoicePayment, InvoicePaymentDetails, InvoiceVatSummary
+from app.db.models.user import User, UserPaymentProfile
+from app.modules.invoices.domain.enums import ClientType, EsigibilitaIVA, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
 from app.modules.invoices.schemas.api import ClientRead, ClientsListResponse, InvoiceAttachmentPayload, InvoiceClientPayload, InvoiceClientType, InvoiceCreateRequest, InvoiceDocumentPayload, InvoiceLinePayload, InvoiceRead, InvoicesListResponse
+from app.modules.invoices.schemas.payment import PaymentDetailsPayload
+from app.modules.vat.services.vat_movement_service import VatMovementService
 
 TWOPLACES = Decimal("0.01")
 ZERO = Decimal("0.00")
@@ -106,6 +108,7 @@ class InvoiceService:
                 stamp_duty_amount=ZERO,
                 rounding_amount=ZERO,
                 invoice_metadata=invoice_metadata,
+                esigibilita_iva=payload.esigibilita_iva,
             )
             if test_mode:
                 invoice.id = cast(UUID, test_invoice_id)
@@ -127,7 +130,13 @@ class InvoiceService:
                 )
                 for vat_rate, nature, taxable_amount, vat_amount in calc.vat_groups
             ]
-            payments = [self._create_payment(invoice_uuid, payload.payment_method, calc.total, payload.issue_date)]
+            payment_details = self._create_payment_details(invoice_uuid, payload.payment_details)
+            payments = [self._create_payment(invoice_uuid, payload.payment_method, calc.total, payload.issue_date, payload.payment_details)]
+            payment_profile = self._upsert_user_payment_profile(
+                current_user.id,
+                payload.payment_method,
+                payload.payment_details,
+            ) if payload.save_payment_profile else None
             related_document_fingerprints = {
                 self._attachment_fingerprint(document.file)
                 for document in payload.documents
@@ -162,8 +171,17 @@ class InvoiceService:
                 self.db.add_all(lines)
                 self.db.add_all(vat_summaries)
                 self.db.add_all(payments)
+                if payment_details is not None:
+                    self.db.add(payment_details)
+                if payment_profile is not None:
+                    self.db.add(payment_profile)
                 self.db.add_all(attachments)
                 self.db.add_all(documents)
+                self.db.flush()
+
+                vat_movement_service = VatMovementService(self.db)
+                vat_movement_service.create_from_active_invoice(invoice_uuid)
+
                 self.db.commit()
                 self.db.refresh(invoice)
                 self.db.refresh(client)
@@ -173,6 +191,8 @@ class InvoiceService:
                     self.db.refresh(summary)
                 for payment in payments:
                     self.db.refresh(payment)
+                if payment_details is not None:
+                    self.db.refresh(payment_details)
                 for attachment in attachments:
                     self.db.refresh(attachment)
                 for document in documents:
@@ -180,7 +200,7 @@ class InvoiceService:
             else:
                 self._cleanup_files(written_files)
 
-            return InvoiceRead.model_validate(self._serialize_invoice(invoice, client, lines, vat_summaries, attachments, documents))
+            return InvoiceRead.model_validate(self._serialize_invoice(invoice, client, lines, vat_summaries, attachments, documents, payment_details))
         except HTTPException:
             self.db.rollback()
             self._cleanup_files(written_files)
@@ -215,9 +235,10 @@ class InvoiceService:
             summaries = list(self.db.scalars(select(InvoiceVatSummary).where(InvoiceVatSummary.invoice_id == invoice.id).order_by(InvoiceVatSummary.vat_rate.asc())).all())
             attachments = list(self.db.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id, InvoiceDocument.xml_block == "ALLEGATI").order_by(InvoiceDocument.created_at.asc())).all())
             documents = list(self.db.scalars(select(InvoiceDocument).where(InvoiceDocument.invoice_id == invoice.id, InvoiceDocument.xml_block != "ALLEGATI").order_by(InvoiceDocument.created_at.asc())).all())
+            payment_details = self.db.get(InvoicePaymentDetails, invoice.id)
             if client is None:
                 continue
-            data.append(self._serialize_invoice(invoice, client, lines, summaries, attachments, documents))
+            data.append(self._serialize_invoice(invoice, client, lines, summaries, attachments, documents, payment_details))
 
         return InvoicesListResponse.model_validate({
             "data": data,
@@ -456,7 +477,14 @@ class InvoiceService:
             unit_of_measure=payload.unit_measure,
         )
 
-    def _create_payment(self, invoice_id: UUID, payment_method: PaymentMethod, amount: Decimal, due_date) -> InvoicePayment:
+    def _create_payment(
+        self,
+        invoice_id: UUID,
+        payment_method: PaymentMethod,
+        amount: Decimal,
+        due_date,
+        payment_details: PaymentDetailsPayload | None,
+    ) -> InvoicePayment:
         return InvoicePayment(
             invoice_id=invoice_id,
             payment_method=payment_method,
@@ -465,9 +493,76 @@ class InvoiceService:
             amount=amount.quantize(TWOPLACES, rounding=ROUND_HALF_UP),
             paid_amount=ZERO,
             paid_at=None,
-            iban=None,
-            reference=None,
+            iban=payment_details.iban if payment_details is not None else None,
+            reference=payment_details.payment_code if payment_details is not None else None,
         )
+
+    @staticmethod
+    def _create_payment_details(
+        invoice_id: UUID,
+        payment_details: PaymentDetailsPayload | None,
+    ) -> InvoicePaymentDetails | None:
+        if payment_details is None:
+            return None
+
+        return InvoicePaymentDetails(
+            invoice_id=invoice_id,
+            beneficiary=payment_details.beneficiary,
+            financial_institution=payment_details.financial_institution,
+            iban=payment_details.iban,
+            abi=payment_details.abi,
+            cab=payment_details.cab,
+            bic=payment_details.bic,
+            payment_code=payment_details.payment_code,
+            postal_office_code=payment_details.postal_office_code,
+        )
+
+    def _upsert_user_payment_profile(
+        self,
+        user_id: UUID,
+        payment_method: PaymentMethod,
+        payment_details: PaymentDetailsPayload | None,
+    ) -> UserPaymentProfile:
+        existing = self.db.scalar(
+            select(UserPaymentProfile).where(
+                UserPaymentProfile.user_id == user_id,
+                UserPaymentProfile.payment_method == payment_method,
+            )
+        )
+        fields = self._payment_profile_fields(payment_details)
+        if existing is not None:
+            for field_name, field_value in fields.items():
+                setattr(existing, field_name, field_value)
+            return existing
+        return UserPaymentProfile(
+            user_id=user_id,
+            payment_method=payment_method,
+            **fields,
+        )
+
+    @staticmethod
+    def _payment_profile_fields(payment_details: PaymentDetailsPayload | None) -> dict[str, str | None]:
+        if payment_details is None:
+            return {
+                "beneficiary": None,
+                "financial_institution": None,
+                "iban": None,
+                "abi": None,
+                "cab": None,
+                "bic": None,
+                "payment_code": None,
+                "postal_office_code": None,
+            }
+        return {
+            "beneficiary": payment_details.beneficiary,
+            "financial_institution": payment_details.financial_institution,
+            "iban": payment_details.iban,
+            "abi": payment_details.abi,
+            "cab": payment_details.cab,
+            "bic": payment_details.bic,
+            "payment_code": payment_details.payment_code,
+            "postal_office_code": payment_details.postal_office_code,
+        }
 
     def _create_attachments(
         self,
@@ -625,6 +720,7 @@ class InvoiceService:
         vat_summaries: list[InvoiceVatSummary],
         attachments: list[InvoiceDocument],
         documents: list[InvoiceDocument],
+        payment_details: InvoicePaymentDetails | None,
     ) -> dict[str, object]:
         return {
             "id": str(invoice.id),
@@ -733,9 +829,26 @@ class InvoiceService:
                 }
                 for document in documents
             ],
+            "paymentDetails": self._serialize_payment_details(payment_details),
             "createdAt": invoice.created_at,
             "updatedAt": invoice.updated_at,
             "issuedAt": invoice.issued_at,
+            "esigibilitaIva": invoice.esigibilita_iva.value if isinstance(invoice.esigibilita_iva, EsigibilitaIVA) else invoice.esigibilita_iva,
+        }
+
+    @staticmethod
+    def _serialize_payment_details(payment_details: InvoicePaymentDetails | None) -> dict[str, object] | None:
+        if payment_details is None:
+            return None
+        return {
+            "beneficiary": payment_details.beneficiary,
+            "financialInstitution": payment_details.financial_institution,
+            "iban": payment_details.iban,
+            "abi": payment_details.abi,
+            "cab": payment_details.cab,
+            "bic": payment_details.bic,
+            "paymentCode": payment_details.payment_code,
+            "postalOfficeCode": payment_details.postal_office_code,
         }
 
     def _serialize_client(self, client: Client) -> ClientRead:

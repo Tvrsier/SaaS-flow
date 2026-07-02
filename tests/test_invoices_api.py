@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 
 from app.auth import create_access_token  # noqa: E402
 from app.config.settings import get_settings  # noqa: E402
-from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoicePayment  # noqa: E402
-from app.db.models.user import AccountType, User  # noqa: E402
+from app.db.models.invoice import Client, Invoice, InvoiceDocument, InvoicePayment, InvoicePaymentDetails, VatMovement  # noqa: E402
+from app.db.models.user import AccountType, User, UserPaymentProfile  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.modules.invoices.domain.enums import ClientType  # noqa: E402
+from app.modules.invoices.domain.enums import ClientType, PaymentMethod  # noqa: E402
 
 settings = get_settings()
 engine = create_engine(settings.database_url, pool_pre_ping=True)
@@ -203,6 +203,10 @@ def invoice_payload() -> dict[str, object]:
         "currency": "EUR",
         "documentType": "TD01",
         "paymentMethod": "MP05",
+        "paymentDetails": {
+            "beneficiary": "GestPro SRL",
+            "iban": "IT60X0542811101000000123456",
+        },
         "client": {
             "clientType": "company",
             "companyName": "Demo S.r.l.",
@@ -251,6 +255,8 @@ def test_create_invoice_persists_invoice_client_lines(
     assert body["client"]["clientCode"] == "12345678901"
     assert body["lines"][0]["numberLine"] == 1
     assert body["vatSummary"][0]["vatRate"] in ("22.00", 22, 22.0)
+    assert body["paymentDetails"]["beneficiary"] == "GestPro SRL"
+    assert body["paymentDetails"]["iban"] == "IT60X0542811101000000123456"
 
     invoice = db_session.scalar(
         select(Invoice).where(
@@ -264,9 +270,188 @@ def test_create_invoice_persists_invoice_client_lines(
 
     payments_after = len(db_session.scalars(select(InvoicePayment)).all())
     assert payments_after == payments_before + 1
+    payment_details = db_session.get(InvoicePaymentDetails, invoice.id)
+    assert payment_details is not None
+    assert payment_details.beneficiary == "GestPro SRL"
+    assert payment_details.iban == "IT60X0542811101000000123456"
 
     client_row = db_session.get(Client, invoice.customer_id)
     assert client_row is not None
+
+    vat_movements = db_session.scalars(
+        select(VatMovement).where(
+            VatMovement.source_type == "ACTIVE_INVOICE",
+            VatMovement.source_invoice_id == invoice.id,
+        )
+    ).all()
+    assert len(vat_movements) == 1
+    assert vat_movements[0].movement_type == "DEBIT"
+    assert vat_movements[0].vat_amount == invoice.vat_amount
+
+
+def test_create_invoice_save_payment_profile_creates_profile(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+    invoice_payload: dict[str, object],
+    company_user: User,
+):
+    payload = dict(invoice_payload)
+    payload["invoiceNumber"] = "2026-001-PROFILE"
+    payload["savePaymentProfile"] = True
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    profile = db_session.scalar(
+        select(UserPaymentProfile).where(
+            UserPaymentProfile.user_id == company_user.id,
+            UserPaymentProfile.payment_method == PaymentMethod.MP05,
+        )
+    )
+    assert profile is not None
+    assert profile.beneficiary == "GestPro SRL"
+    assert profile.iban == "IT60X0542811101000000123456"
+
+
+def test_create_invoice_save_payment_profile_updates_existing_profile(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+    invoice_payload: dict[str, object],
+    company_user: User,
+):
+    profile = UserPaymentProfile(
+        user_id=company_user.id,
+        payment_method=PaymentMethod.MP05,
+        beneficiary="Old Beneficiary",
+        iban="IT60X0000000000000000000000",
+    )
+    db_session.add(profile)
+    db_session.commit()
+
+    payload = dict(invoice_payload)
+    payload["invoiceNumber"] = "2026-001-PROFILE-UPD"
+    payload["savePaymentProfile"] = True
+    payload["paymentDetails"] = {
+        "beneficiary": "Nuovo Beneficiario",
+        "iban": "IT60X0542811101000000123999",
+        "bic": "ABCDEF12",
+    }
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    stored_profiles = db_session.scalars(
+        select(UserPaymentProfile).where(
+            UserPaymentProfile.user_id == company_user.id,
+            UserPaymentProfile.payment_method == PaymentMethod.MP05,
+        )
+    ).all()
+    assert len(stored_profiles) == 1
+    assert stored_profiles[0].beneficiary == "Nuovo Beneficiario"
+    assert stored_profiles[0].iban == "IT60X0542811101000000123999"
+    assert stored_profiles[0].bic == "ABCDEF12"
+
+
+def test_create_invoice_split_payment_does_not_create_vat_debit_movements(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+    invoice_payload: dict[str, object],
+    company_user: User,
+):
+    payload = dict(invoice_payload)
+    payload["invoiceNumber"] = "2026-SPLIT-001"
+    payload["esigibilitaIva"] = "S"
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    invoice = db_session.scalar(
+        select(Invoice).where(
+            Invoice.invoice_number == "2026-SPLIT-001",
+            Invoice.company_id == company_user.id,
+        )
+    )
+    assert invoice is not None
+
+    vat_movements = db_session.scalars(
+        select(VatMovement).where(
+            VatMovement.source_type == "ACTIVE_INVOICE",
+            VatMovement.source_invoice_id == invoice.id,
+        )
+    ).all()
+    assert vat_movements == []
+
+
+def test_create_invoice_mp05_without_payment_details_returns_422(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+):
+    payload = dict(invoice_payload)
+    payload.pop("paymentDetails", None)
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_invoice_mp05_without_iban_returns_422(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+):
+    payload = dict(invoice_payload)
+    payload["paymentDetails"] = {"beneficiary": "GestPro SRL"}
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_invoice_mp01_with_null_payment_details_succeeds(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+):
+    payload = dict(invoice_payload)
+    payload["paymentMethod"] = "MP01"
+    payload["paymentDetails"] = None
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 201
+    assert response.json()["paymentDetails"] is None
+
+
+def test_create_invoice_mp01_with_payment_details_returns_422(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+):
+    payload = dict(invoice_payload)
+    payload["paymentMethod"] = "MP01"
+    payload["paymentDetails"] = {"paymentCode": "ABC123"}
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_invoice_mp23_requires_payment_code(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+):
+    payload = dict(invoice_payload)
+    payload["paymentMethod"] = "MP23"
+    payload["paymentDetails"] = {"beneficiary": "GestPro SRL"}
+
+    response = client.post("/invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
 
 
 def test_create_invoice_reuses_existing_customer_and_persists_customer_id(
@@ -585,4 +770,3 @@ def test_create_invoice_with_ddt_stores_in_metadata(client: TestClient, db_sessi
     assert persisted.invoice_metadata["ddt"][1]["numero"] == "DDT-2026-002"
     assert persisted.invoice_metadata["ddt"][1]["data"] == "2026-05-11"
     assert persisted.invoice_metadata["ddt"][1]["riferimento_linee"] == [1, 2]
-

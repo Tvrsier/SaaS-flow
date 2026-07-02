@@ -7,14 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.auth import create_access_token, decode_access_token
 from app.config.settings import get_settings
-from app.db.models.user import AccountType, User, UserAddress
+from app.db.models.user import AccountType, User, UserAddress, UserPaymentProfile
 from app.db.session import get_db
 from app.logger import logger
 from app.modules.auth.schemas import AuthLoginResponse, AuthMeResponse, AuthRegisterResponse
+from app.modules.invoices.schemas.payment import UserPaymentProfileResponse
+from app.modules.vat.services.vat_login_sync_service import VatLoginSyncService
 from app.schemas.user import UserAddressesResponse, UserAddressRead, UserCreate, UserLogin, UserRead
 
 
@@ -32,6 +34,20 @@ def _me_payload(user: User) -> AuthMeResponse:
         partitaIva=user.partita_iva,
         codiceFiscale=user.codice_fiscale,
         phone=user.phone,
+        paymentProfiles=[
+            UserPaymentProfileResponse(
+                paymentMethod=profile.payment_method,
+                beneficiary=profile.beneficiary,
+                financialInstitution=profile.financial_institution,
+                iban=profile.iban,
+                abi=profile.abi,
+                cab=profile.cab,
+                bic=profile.bic,
+                paymentCode=profile.payment_code,
+                postalOfficeCode=profile.postal_office_code,
+            )
+            for profile in sorted(user.payment_profiles, key=lambda value: value.payment_method.value)
+        ],
     )
 
 
@@ -107,7 +123,11 @@ def get_current_user(
         logger.warning("Expired auth token received on /auth/me exp=%s now=%s", exp_raw, datetime.now(timezone.utc).isoformat())
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
-    user: User | None = db.get(User, user_id)
+    user: User | None = db.scalar(
+        select(User)
+        .options(selectinload(User.payment_profiles))
+        .where(User.id == user_id)
+    )
     logger.debug("User lookup by id=%s found=%s", user_id, user is not None)
     if user is None or not user.is_active:
         logger.warning("Active user not found for token subject=%s", subject)
@@ -155,13 +175,28 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
                     street_number=None,
                 )
             )
+        for profile in payload.payment_profiles:
+            db.add(
+                UserPaymentProfile(
+                    user_id=user.id,
+                    payment_method=profile.payment_method,
+                    beneficiary=profile.beneficiary,
+                    financial_institution=profile.financial_institution,
+                    iban=profile.iban,
+                    abi=profile.abi,
+                    cab=profile.cab,
+                    bic=profile.bic,
+                    payment_code=profile.payment_code,
+                    postal_office_code=profile.postal_office_code,
+                )
+            )
         db.commit()
         logger.info("Register committed email=%s id=%s", user.email, user.id)
     except IntegrityError:
         db.rollback()
         logger.exception("Register commit failed for email=%s", payload.email)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already in use")
-    db.refresh(user)
+    db.refresh(user, attribute_names=["payment_profiles"])
     logger.debug("Register refreshed user email=%s id=%s", user.email, user.id)
     token = create_access_token(user.id, user.email)
     logger.info("Register token issued email=%s", user.email)
@@ -189,6 +224,10 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 
     user.last_login_at = datetime.now(timezone.utc)
     db.add(user)
+
+    vat_login_sync_service = VatLoginSyncService(db)
+    vat_login_sync_service.sync_company_vat(user.id, frequency="QUARTERLY")
+
     try:
         db.commit()
         logger.info("Login commit succeeded email=%s id=%s", user.email, user.id)

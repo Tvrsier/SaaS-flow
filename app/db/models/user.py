@@ -5,11 +5,12 @@ from enum import Enum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, Index, String, func, text
+from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.modules.invoices.domain.enums import PaymentMethod
 
 if TYPE_CHECKING:
     from app.db.models.invoice import Client
@@ -60,6 +61,7 @@ class User(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     clients: Mapped[list[Client]] = relationship(back_populates="company", cascade="all, delete-orphan")
     addresses: Mapped[list["UserAddress"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    payment_profiles: Mapped[list["UserPaymentProfile"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class UserAddress(Base):
@@ -84,3 +86,29 @@ class UserAddress(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
     user: Mapped[User] = relationship(back_populates="addresses")
+
+
+class UserPaymentProfile(Base):
+    __tablename__ = "user_payment_profiles"
+    __table_args__ = (
+        Index("ix_user_payment_profiles_user_id", "user_id"),
+        UniqueConstraint("user_id", "payment_method", name="uq_user_payment_profiles_user_method"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    payment_method: Mapped[PaymentMethod] = mapped_column(SAEnum(PaymentMethod, name="invoice_payment_method"), nullable=False)
+
+    beneficiary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    financial_institution: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
+    abi: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    cab: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    bic: Mapped[str | None] = mapped_column(String(11), nullable=True)
+    payment_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    postal_office_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped[User] = relationship(back_populates="payment_profiles")

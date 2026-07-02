@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.models.user import User
-from app.modules.invoices.domain.enums import ClientType, DocumentType, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
+from app.modules.invoices.domain.enums import ClientType, DocumentType, EsigibilitaIVA, InvoiceStatus, NatureCode, PaymentMethod, PaymentStatus
 
 
 class UUIDTimestampMixin:
@@ -118,11 +118,20 @@ class Invoice(Base, UUIDTimestampMixin):
     xml_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    esigibilita_iva: Mapped[EsigibilitaIVA | None] = mapped_column(
+        SAEnum(EsigibilitaIVA, name="esigibilita_iva_type", values_callable=lambda obj: [e.value for e in obj]), nullable=True
+    )
+
     invoice_metadata: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payments: Mapped[list["InvoicePayment"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
+    payment_details: Mapped["InvoicePaymentDetails | None"] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class InvoiceLine(Base, UUIDTimestampMixin):
@@ -196,6 +205,22 @@ class InvoicePayment(Base, UUIDTimestampMixin):
     iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invoice: Mapped[Invoice] = relationship(back_populates="payments")
+
+
+class InvoicePaymentDetails(Base):
+    __tablename__ = "invoice_payment_details"
+
+    invoice_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), primary_key=True)
+    beneficiary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    financial_institution: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
+    abi: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    cab: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    bic: Mapped[str | None] = mapped_column(String(11), nullable=True)
+    payment_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    postal_office_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    invoice: Mapped[Invoice] = relationship(back_populates="payment_details")
 
 
 class InvoiceDocument(Base, UUIDTimestampMixin):
@@ -287,6 +312,10 @@ class PassiveInvoice(Base, UUIDTimestampMixin):
     xml_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     xml_s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    esigibilita_iva: Mapped[EsigibilitaIVA | None] = mapped_column(
+        SAEnum(EsigibilitaIVA, name="esigibilita_iva_type", values_callable=lambda obj: [e.value for e in obj]), nullable=True
+    )
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -444,6 +473,7 @@ __all__ = [
     "InvoiceLine",
     "InvoiceVatSummary",
     "InvoicePayment",
+    "InvoicePaymentDetails",
     "InvoiceDocument",
     "InvoiceAttachment",
     "PassiveInvoice",
@@ -453,4 +483,3 @@ __all__ = [
     "VatMovement",
     "VatSettlement",
 ]
-

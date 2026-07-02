@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
+from app.modules.invoices.schemas.payment import UserPaymentProfileCreate
 from app.db.models.user import AccountType
 
 
@@ -40,6 +41,7 @@ class UserCreate(BaseModel):
     residence_province: str | None = Field(default=None, alias="residenceProvince")
     residence_comune: str | None = Field(default=None, alias="residenceComune")
     residence_postal: str | None = Field(default=None, alias="residencePostal")
+    payment_profiles: list[UserPaymentProfileCreate] = Field(default_factory=list, alias="paymentProfiles")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -74,6 +76,9 @@ class UserCreate(BaseModel):
                 raise ValueError("residencePostal is required for this account type")
             if not self.partita_iva:
                 raise ValueError("partitaIva is required for this account type")
+        payment_methods = [profile.payment_method for profile in self.payment_profiles]
+        if len(payment_methods) != len(set(payment_methods)):
+            raise ValueError("paymentProfiles contains duplicated paymentMethod values")
         return self
 
 

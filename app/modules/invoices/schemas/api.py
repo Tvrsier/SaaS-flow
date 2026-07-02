@@ -7,7 +7,8 @@ from enum import Enum, IntEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.modules.invoices.domain.enums import DocumentType, NatureCode, PaymentMethod
+from app.modules.invoices.domain.enums import DocumentType, EsigibilitaIVA, NatureCode, PaymentMethod
+from app.modules.invoices.schemas.payment import PaymentDetailsPayload, validate_payment_details_for_method
 
 TWOPLACES = Decimal("0.01")
 
@@ -197,6 +198,8 @@ class InvoiceCreateRequest(BaseModel):
     currency: InvoiceCurrency
     document_type: DocumentType = Field(..., alias="documentType")
     payment_method: PaymentMethod = Field(..., alias="paymentMethod")
+    payment_details: PaymentDetailsPayload | None = Field(default=None, alias="paymentDetails")
+    save_payment_profile: bool = Field(default=False, alias="savePaymentProfile")
     client: InvoiceClientPayload
     lines: list[InvoiceLinePayload] = Field(..., min_length=1)
     subtotal: Decimal = Field(..., ge=Decimal("0"))
@@ -205,6 +208,7 @@ class InvoiceCreateRequest(BaseModel):
     attachments: list[InvoiceAttachmentPayload] = Field(default_factory=list)
     documents: list[InvoiceDocumentPayload] = Field(default_factory=list)
     ddt: list[InvoiceDDTPayload] = Field(default_factory=list)
+    esigibilita_iva: EsigibilitaIVA | None = Field(default=None, alias="esigibilitaIva")
 
     @field_validator("invoice_number")
     @classmethod
@@ -225,6 +229,7 @@ class InvoiceCreateRequest(BaseModel):
             raise ValueError("vatTotal does not match invoice lines")
         if total != calculated_total:
             raise ValueError("total does not match subtotal + vatTotal")
+        validate_payment_details_for_method(self.payment_method, self.payment_details)
         return self
 
 
@@ -327,9 +332,11 @@ class InvoiceRead(BaseModel):
     vat_summary: list[InvoiceVatSummaryRead] = Field(default_factory=list, alias="vatSummary")
     attachments: list[InvoiceAttachmentRead] = Field(default_factory=list)
     documents: list[InvoiceDocumentRead] = Field(default_factory=list)
+    payment_details: PaymentDetailsPayload | None = Field(default=None, alias="paymentDetails")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     issued_at: datetime | None = Field(default=None, alias="issuedAt")
+    esigibilita_iva: EsigibilitaIVA | None = Field(default=None, alias="esigibilitaIva")
 
 
 class InvoicesListResponse(BaseModel):

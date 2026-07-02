@@ -212,6 +212,7 @@ class PassiveInvoiceImportService:
             xml_hash=xml_hash,
             xml_s3_key=None,  # TODO: store XML to S3
             source_channel=source_channel,
+            esigibilita_iva=parsed.esigibilita_iva,
         )
 
         self.db.add(passive_invoice)

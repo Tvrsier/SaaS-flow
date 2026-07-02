@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from app.modules.invoices.domain.enums import DocumentType, NatureCode
+from app.modules.invoices.domain.enums import DocumentType, EsigibilitaIVA, NatureCode
 
 logger = logging.getLogger("GestPro")
 
@@ -56,6 +56,7 @@ class ParsedVatSummary:
     vat_nature: Optional[NatureCode]
     taxable_amount: Decimal
     vat_amount: Decimal
+    esigibilita_iva: Optional[EsigibilitaIVA] = None
 
 
 @dataclass
@@ -71,6 +72,7 @@ class ParsedInvoice:
     total_amount: Decimal
     lines: list[ParsedInvoiceLine]
     vat_summaries: list[ParsedVatSummary]
+    esigibilita_iva: Optional[EsigibilitaIVA] = None
 
 
 class FatturaPAParser:
@@ -152,6 +154,12 @@ class FatturaPAParser:
             vat_amount = Decimal(sum(s.vat_amount for s in vat_summaries))
             total_amount = Decimal(taxable_amount + vat_amount)
 
+            # Use EsigibilitaIVA from the first VAT summary that has it set
+            esigibilita_iva = next(
+                (s.esigibilita_iva for s in vat_summaries if s.esigibilita_iva is not None),
+                None,
+            )
+
             parsed_invoice = ParsedInvoice(
                 cedente_prestatore=cedente,
                 cessionario_committente=cessionario,
@@ -164,6 +172,7 @@ class FatturaPAParser:
                 total_amount=total_amount,
                 lines=lines,
                 vat_summaries=vat_summaries,
+                esigibilita_iva=esigibilita_iva,
             )
 
             logger.info(f"Successfully parsed FatturaPA: {invoice_number}, date={invoice_date}")
@@ -339,12 +348,16 @@ class FatturaPAParser:
             vat_amount_str = self._get_text(riepilogo, f"{{{ns}}}Imposta", ns, default="0") or "0"
             vat_amount = Decimal(vat_amount_str)
 
+            esigibilita_iva_str = self._get_text(riepilogo, f"{{{ns}}}EsigibilitaIVA", ns)
+            esigibilita_iva = EsigibilitaIVA(esigibilita_iva_str) if esigibilita_iva_str else None
+
             summaries.append(
                 ParsedVatSummary(
                     vat_rate=vat_rate,
                     vat_nature=vat_nature,
                     taxable_amount=taxable_amount,
                     vat_amount=vat_amount,
+                    esigibilita_iva=esigibilita_iva,
                 )
             )
 
