@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,7 @@ class Settings(BaseSettings):
     mock_login_password: str | None = Field(default=None, alias="MOCKED_LOGIN_PASSWORD")
     allow_origins: str = Field(default="*", alias="ALLOW_ORIGINS")
     public_data_dir: str = Field(default="./data/public", alias="PUBLIC_DATA_DIR")
+    invoice_files_root: Path = Field(default=Path("./data/public/invoices"), alias="INVOICE_FILES_ROOT")
     assets_dir: str = Field(default="./data/assets", alias="ASSETS_DIR")
     use_proxy: bool = Field(default=False, alias="USE_PROXY")
     scope: str | None = Field(default=None, alias="SCOPE")

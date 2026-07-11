@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Generator, cast
 from uuid import uuid4
 
@@ -23,6 +24,37 @@ from app.modules.invoices.domain.enums import ClientType, PaymentMethod  # noqa:
 settings = get_settings()
 engine = create_engine(settings.database_url, pool_pre_ping=True)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False)
+
+
+def test_invoice_document_download_regenerates_and_is_tenant_scoped(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    invoice_payload: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    customer_user: User,
+) -> None:
+    monkeypatch.setattr(settings, "invoice_files_root", tmp_path / "invoices")
+    invoice_payload["invoiceNumber"] = "2026/026"
+    created = client.post("/invoices", json=invoice_payload, headers=auth_headers)
+    assert created.status_code == 201
+
+    pdf = client.get("/api/v1/invoices/2026%2F026/pdf", headers=auth_headers)
+    xml = client.get("/api/v1/invoices/2026%2F026/xml", headers=auth_headers)
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF")
+    assert xml.status_code == 200
+    assert xml.headers["content-type"] == "application/xml"
+    assert xml.content.startswith(b"<?xml")
+
+    other_token = create_access_token(customer_user.id, customer_user.email)
+    hidden = client.get(
+        "/api/v1/invoices/2026%2F026/pdf",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert hidden.status_code == 404
+    assert hidden.json()["detail"]["code"] == "INVOICE_NOT_FOUND"
 
 
 @pytest.fixture()

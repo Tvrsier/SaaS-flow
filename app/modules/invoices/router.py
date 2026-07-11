@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.models.user import User
@@ -8,6 +10,7 @@ from app.db.session import get_db
 from app.modules.auth.router import get_current_user
 from app.modules.invoices.schemas.api import ClientsListResponse, InvoiceCreateRequest, InvoiceRead, InvoicesListResponse
 from app.modules.invoices.services.invoice_service import InvoiceService
+from app.workers.invoice_documents import InvoiceDocumentJobDispatcher
 
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -16,12 +19,16 @@ router = APIRouter(prefix="/invoices", tags=["invoices"])
 @router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED)
 def create_invoice(
     payload: InvoiceCreateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     invoice_form_test: str | None = Header(default=None, alias="Invoice-Form-Test"),
 ) -> InvoiceRead:
     service = InvoiceService(db)
-    return service.create_invoice(current_user, payload, invoice_form_test=invoice_form_test)
+    response = service.create_invoice(current_user, payload, invoice_form_test=invoice_form_test)
+    if not service._is_test_mode(invoice_form_test):
+        InvoiceDocumentJobDispatcher(background_tasks).enqueue(invoice_id=UUID(response.id))
+    return response
 
 
 @router.get("", response_model=InvoicesListResponse)

@@ -13,6 +13,7 @@ from app.config.settings import get_settings
 from app.logger import logger
 from app.modules.auth import router as auth_router
 from app.modules.invoices.router import router as invoices_router
+from app.modules.invoices.documents.router import router as invoice_documents_router
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
@@ -44,6 +45,7 @@ api_prefix = "/api" if settings.use_proxy else ""
 
 app.include_router(auth_router, prefix=api_prefix, tags=["auth"])
 app.include_router(invoices_router, prefix=api_prefix, tags=["invoices"])
+app.include_router(invoice_documents_router)
 
 public_data_path = Path(settings.public_data_dir)
 if public_data_path.exists():
